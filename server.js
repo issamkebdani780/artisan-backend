@@ -19,14 +19,34 @@ const JWT_SECRET = process.env.JWT_SECRET || 'bricolopro_secret_key';
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.sendStatus(401);
+    if (!token) return res.status(401).json({ error: 'Missing token' });
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403);
+        if (err) return res.status(403).json({ error: 'Invalid or expired token' });
         req.user = user;
         next();
     });
 };
+
+// Helper to initialize categories
+const seedCategories = async () => {
+    try {
+        const [rows] = await db.query('SELECT COUNT(*) as count FROM categories');
+        if (rows[0].count === 0) {
+            const categories = [
+                'Plomberie', 'Électricité', 'Peinture', 'Menuiserie', 
+                'Chauffage', 'Climatisation', 'Maçonnerie', 'Nettoyage'
+            ];
+            for (const cat of categories) {
+                await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
+            }
+            console.log('Categories seeded successfully');
+        }
+    } catch (err) {
+        console.error('Error seeding categories:', err);
+    }
+};
+seedCategories();
 
 // --- AUTH ROUTES ---
 
@@ -57,8 +77,22 @@ app.post('/api/auth/login', async (req, res) => {
         if (!isPasswordValid) return res.status(401).json({ error: 'Invalid credentials' });
         
         const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
-        
-        res.json({ message: 'Login successful', token, user: { id: user.id, name: user.name, role: user.role } });
+
+        res.json({ 
+            message: 'Login successful', 
+            token, 
+            user: { 
+                id: user.id, 
+                name: user.name, 
+                role: user.role,
+                email: user.email,
+                specialty: user.specialty,
+                phone: user.phone,
+                address: user.address,
+                profile_pic: user.profile_pic,
+                experience_years: user.experience_years
+            } 
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -135,7 +169,7 @@ app.get('/api/artisans/featured', async (req, res) => {
 // Get Single Artisan Details
 app.get('/api/artisans/:id', async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT id, name, email, specialty, experience_years, phone, address, is_verified, rating, created_at FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
+        const [rows] = await db.query('SELECT id, name, email, specialty, experience_years, phone, address, is_verified, rating, review_count, profile_pic, created_at FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
         if (rows.length === 0) return res.status(404).json({ error: 'Artisan not found' });
         res.json(rows[0]);
     } catch (err) {
@@ -146,10 +180,14 @@ app.get('/api/artisans/:id', async (req, res) => {
 // --- SERVICE ROUTES ---
 // Get Services by Artisan
 app.get('/api/services/artisan/:id', async (req, res) => {
+    const artisanId = req.params.id;
+    console.log(`Fetching services for artisan ID: ${artisanId}`);
     try {
-        const [rows] = await db.query('SELECT s.*, c.name as category_name FROM services s JOIN categories c ON s.category_id = c.id WHERE s.artisan_id = ?', [req.params.id]);
+        const [rows] = await db.query('SELECT s.*, c.name as category_name FROM services s LEFT JOIN categories c ON s.category_id = c.id WHERE s.artisan_id = ?', [artisanId]);
+        console.log(`Found ${rows.length} services`);
         res.json(rows);
     } catch (err) {
+        console.error('Error in getArtisanServices:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -201,11 +239,12 @@ app.get('/api/categories', async (req, res) => {
 // --- BOOKING ROUTES ---
 
 // Create Booking
-app.post('/api/bookings', async (req, res) => {
-    const { client_id, service_id, booking_date, total_price } = req.body;
+app.post('/api/bookings', authenticateToken, async (req, res) => {
+    const { service_id, booking_date, total_price } = req.body;
+    const client_id = req.user.id;
     try {
         const [result] = await db.query(
-            'INSERT INTO bookings (client_id, service_id, booking_date, total_price) VALUES (?, ?, ?, ?)',
+            'INSERT INTO bookings (client_id, service_id, booking_date, total_price, status) VALUES (?, ?, ?, ?, "pending")',
             [client_id, service_id, booking_date, total_price]
         );
         res.status(201).json({ message: 'Booking created', bookingId: result.insertId });
@@ -261,15 +300,84 @@ app.put('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 });
 
+// Artisan Dashboard Stats
+app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res) => {
+    const id = req.params.id;
+    try {
+        const [bookingRevenue] = await db.query('SELECT SUM(total_price) as total FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status = "completed"', [id]);
+        const [devisRevenue] = await db.query('SELECT SUM(budget) as total FROM devis WHERE artisan_id = ? AND status = "accepté"', [id]);
+        
+        const [totalBookings] = await db.query('SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ?', [id]);
+        const [totalDevis] = await db.query('SELECT COUNT(*) as count FROM devis WHERE artisan_id = ?', [id]);
+        
+        const [activeBookings] = await db.query('SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status IN ("pending", "confirmed")', [id]);
+        const [activeDevis] = await db.query('SELECT COUNT(*) as count FROM devis WHERE artisan_id = ? AND status IN ("en attente", "accepté")', [id]);
+        
+        const [userData] = await db.query('SELECT rating, review_count FROM users WHERE id = ?', [id]);
+        
+        res.json({
+            revenue: (parseFloat(bookingRevenue[0].total) || 0) + (parseFloat(devisRevenue[0].total) || 0),
+            totalProjects: totalBookings[0].count + totalDevis[0].count,
+            activeProjects: activeBookings[0].count + activeDevis[0].count,
+            rating: userData[0]?.rating || 0,
+            reviews: userData[0]?.review_count || 0
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- SERVICE MANAGEMENT ---
+
+// Create Service
+app.post('/api/services', authenticateToken, async (req, res) => {
+    const { category_id, title, description, base_price, image_url } = req.body;
+    const artisan_id = req.user.id;
+    try {
+        const [result] = await db.query(
+            'INSERT INTO services (category_id, artisan_id, title, description, base_price, image_url) VALUES (?, ?, ?, ?, ?, ?)',
+            [category_id, artisan_id, title, description, base_price, image_url]
+        );
+        res.status(201).json({ message: 'Service created', serviceId: result.insertId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Update Service
+app.put('/api/services/:id', authenticateToken, async (req, res) => {
+    const { category_id, title, description, base_price, image_url } = req.body;
+    try {
+        await db.query(
+            'UPDATE services SET category_id = ?, title = ?, description = ?, base_price = ?, image_url = ? WHERE id = ? AND artisan_id = ?',
+            [category_id, title, description, base_price, image_url, req.params.id, req.user.id]
+        );
+        res.json({ message: 'Service updated' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Delete Service
+app.delete('/api/services/:id', authenticateToken, async (req, res) => {
+    try {
+        await db.query('DELETE FROM services WHERE id = ? AND artisan_id = ?', [req.params.id, req.user.id]);
+        res.json({ message: 'Service deleted' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- DEVIS ROUTES ---
 
 // Create Devis
-app.post('/api/devis', async (req, res) => {
-    const { client_id, category_id, description, budget, date, artisan_id } = req.body;
+app.post('/api/devis', authenticateToken, async (req, res) => {
+    const { category_id, description, budget, date, artisan_id } = req.body;
+    const client_id = req.user.id;
     try {
         const [result] = await db.query(
             'INSERT INTO devis (client_id, category_id, description, budget, date, artisan_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [client_id, category_id, description, budget, date, artisan_id || null, artisan_id ? 'accepté' : 'en attente']
+            [client_id, category_id, description, budget, date, artisan_id || null, 'en attente']
         );
         res.status(201).json({ message: 'Devis created', devisId: result.insertId });
     } catch (err) {
@@ -308,9 +416,14 @@ app.get('/api/devis/pending/:specialty', authenticateToken, async (req, res) => 
             JOIN categories c ON d.category_id = c.id
             JOIN users u_cli ON d.client_id = u_cli.id
             WHERE d.status = 'en attente' AND d.artisan_id IS NULL
-            AND (c.name LIKE ? OR ? LIKE CONCAT('%', c.name, '%'))
+            AND (
+                LOWER(c.name) LIKE LOWER(?) 
+                OR LOWER(?) LIKE CONCAT('%', LOWER(c.name), '%')
+                OR LOWER(c.name) LIKE CONCAT('%', LOWER(?), '%')
+                OR LEFT(LOWER(c.name), 4) = LEFT(LOWER(?), 4)
+            )
         `;
-        const [rows] = await db.query(query, [`%${specialty}%`, specialty]);
+        const [rows] = await db.query(query, [`%${specialty}%`, specialty, specialty, specialty]);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -338,6 +451,25 @@ app.put('/api/devis/:id/status', authenticateToken, async (req, res) => {
     try {
         await db.query('UPDATE devis SET status = ? WHERE id = ?', [status, req.params.id]);
         res.json({ message: 'Devis status updated' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get Artisan Assigned Devis
+app.get('/api/devis/artisan/:artisanId', authenticateToken, async (req, res) => {
+    const artisanId = req.params.artisanId;
+    try {
+        const query = `
+            SELECT d.*, u.name as client_name, c.name as category_name
+            FROM devis d
+            JOIN users u ON d.client_id = u.id
+            JOIN categories c ON d.category_id = c.id
+            WHERE d.artisan_id = ?
+            ORDER BY d.created_at DESC
+        `;
+        const [rows] = await db.query(query, [artisanId]);
+        res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -381,14 +513,45 @@ app.get('/api/reviews/service/:id', async (req, res) => {
 
 // Update Profile
 app.put('/api/users/:id', authenticateToken, async (req, res) => {
-    const { name, phone, address, specialty, experience_years } = req.body;
+    const { name, phone, address, specialty, experience_years, profile_pic } = req.body;
     try {
         await db.query(
-            'UPDATE users SET name = ?, phone = ?, address = ?, specialty = ?, experience_years = ? WHERE id = ?',
-            [name, phone, address, specialty, experience_years, req.params.id]
+            'UPDATE users SET name = ?, phone = ?, address = ?, specialty = ?, experience_years = ?, profile_pic = ? WHERE id = ?',
+            [name, phone, address, specialty, experience_years, profile_pic, req.params.id]
         );
         res.json({ message: 'Profile updated' });
     } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Change Password
+app.put('/api/users/:id/change-password', authenticateToken, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.params.id;
+
+    console.log(`Password change attempt for user ${userId} by ${req.user.id}`);
+
+    if (req.user.id !== parseInt(userId) && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+
+    try {
+        const [users] = await db.query('SELECT password FROM users WHERE id = ?', [userId]);
+        if (users.length === 0) return res.status(404).json({ error: 'User not found' });
+
+        const user = users[0];
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        console.log(`Password match result: ${isMatch}`);
+        
+        if (!isMatch) return res.status(400).json({ error: 'Mot de passe actuel incorrect' });
+
+        const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+        await db.query('UPDATE users SET password = ? WHERE id = ?', [hashedNewPassword, userId]);
+
+        res.json({ message: 'Mot de passe mis à jour avec succès' });
+    } catch (err) {
+        console.error('Password change error:', err);
         res.status(500).json({ error: err.message });
     }
 });

@@ -11,8 +11,6 @@ async function createAdmin() {
       ['Admin BricoloPro', 'admin@bricolopro.dz', hashedPassword]
     );
     console.log('✅ Admin user created successfully!');
-    console.log('   Email:    admin@bricolopro.dz');
-    console.log('   Password: Admin@123');
   } catch (err) {
     console.error('❌ Error creating admin:', err.message);
   }
