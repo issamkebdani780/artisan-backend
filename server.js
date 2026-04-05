@@ -35,12 +35,19 @@ const seedCategories = async () => {
         if (rows[0].count === 0) {
             const categories = [
                 'Plomberie', 'Électricité', 'Peinture', 'Menuiserie', 
-                'Chauffage', 'Climatisation', 'Maçonnerie', 'Nettoyage'
+                'Chauffage', 'Climatisation', 'Maçonnerie', 'Nettoyage', 'Déménagement'
             ];
             for (const cat of categories) {
                 await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
             }
             console.log('Categories seeded successfully');
+        } else {
+            // Ensure Déménagement exists for users upgrading their database
+            const [demRows] = await db.query('SELECT id FROM categories WHERE name = "Déménagement"');
+            if (demRows.length === 0) {
+                await db.query('INSERT INTO categories (name) VALUES ("Déménagement")');
+                console.log('Déménagement category added to existing database');
+            }
         }
     } catch (err) {
         console.error('Error seeding categories:', err);
