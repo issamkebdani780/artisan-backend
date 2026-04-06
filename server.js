@@ -547,15 +547,68 @@ app.get('/api/devis/artisan/:artisanId', authenticateToken, async (req, res) => 
 
 // --- REVIEW ROUTES ---
 
+// Auto-migrate reviews table to support artisan_id and client_id
+(async () => {
+    try {
+        const [cols] = await db.query("SHOW COLUMNS FROM reviews LIKE 'artisan_id'");
+        if (cols.length === 0) {
+            await db.query("ALTER TABLE reviews ADD COLUMN artisan_id INT NULL, ADD COLUMN client_id INT NULL, MODIFY COLUMN booking_id INT NULL");
+            await db.query("ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE");
+            await db.query("ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE");
+            console.log('Reviews table migrated: added artisan_id and client_id');
+        }
+    } catch (e) { console.error('Reviews migration error:', e.message); }
+})();
+
 // Submit Review
 app.post('/api/reviews', authenticateToken, async (req, res) => {
-    const { booking_id, rating, comment } = req.body;
+    const { booking_id, artisan_id, rating, comment } = req.body;
+    const client_id = req.user.id;
     try {
+        // Check if already reviewed
+        if (artisan_id) {
+            const [existing] = await db.query(
+                'SELECT id FROM reviews WHERE client_id = ? AND artisan_id = ?',
+                [client_id, artisan_id]
+            );
+            if (existing.length > 0) {
+                return res.status(400).json({ error: 'Vous avez déjà laissé un avis pour cet artisan.' });
+            }
+        }
+
         const [result] = await db.query(
-            'INSERT INTO reviews (booking_id, rating, comment) VALUES (?, ?, ?)',
-            [booking_id, rating, comment]
+            'INSERT INTO reviews (booking_id, artisan_id, client_id, rating, comment) VALUES (?, ?, ?, ?, ?)',
+            [booking_id || null, artisan_id || null, client_id, rating, comment]
         );
-        res.status(201).json({ message: 'Review submitted', reviewId: result.insertId });
+
+        // Update artisan's rating and review_count
+        if (artisan_id) {
+            await db.query(`
+                UPDATE users SET
+                    review_count = review_count + 1,
+                    rating = (SELECT ROUND(AVG(rating), 1) FROM reviews WHERE artisan_id = ?)
+                WHERE id = ?
+            `, [artisan_id, artisan_id]);
+        }
+
+        res.status(201).json({ message: 'Avis soumis avec succès', reviewId: result.insertId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get Reviews for an Artisan (public profile)
+app.get('/api/reviews/artisan/:artisanId', async (req, res) => {
+    try {
+        const [rows] = await db.query(`
+            SELECT r.id, r.rating, r.comment, r.created_at,
+                   u.name as client_name, u.profile_pic as client_pic
+            FROM reviews r
+            JOIN users u ON r.client_id = u.id
+            WHERE r.artisan_id = ?
+            ORDER BY r.created_at DESC
+        `, [req.params.artisanId]);
+        res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -578,6 +631,7 @@ app.get('/api/reviews/service/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
 
 // --- PROFILE ROUTES ---
 
