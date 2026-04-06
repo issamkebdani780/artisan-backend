@@ -450,7 +450,7 @@ app.get('/api/devis/user/:id', authenticateToken, async (req, res) => {
 
 // Get Pending Devis for Artisans in their category
 app.get('/api/devis/pending/:specialty', authenticateToken, async (req, res) => {
-    const specialty = req.params.specialty;
+    const specialty = req.params.specialty.toLowerCase();
     try {
         const query = `
             SELECT d.*, c.name as category_name, u_cli.name as client_name 
@@ -458,15 +458,31 @@ app.get('/api/devis/pending/:specialty', authenticateToken, async (req, res) => 
             JOIN categories c ON d.category_id = c.id
             JOIN users u_cli ON d.client_id = u_cli.id
             WHERE d.status = 'en attente' AND d.artisan_id IS NULL
-            AND (
-                LOWER(c.name) LIKE LOWER(?) 
-                OR LOWER(?) LIKE CONCAT('%', LOWER(c.name), '%')
-                OR LOWER(c.name) LIKE CONCAT('%', LOWER(?), '%')
-                OR LEFT(LOWER(c.name), 4) = LEFT(LOWER(?), 4)
-            )
         `;
-        const [rows] = await db.query(query, [`%${specialty}%`, specialty, specialty, specialty]);
-        res.json(rows);
+        const [rows] = await db.query(query);
+
+        // Filter in JS using categoryMap since specialty can be multiple subcategories
+        const categoryMap = {
+            'Menuiserie et Bois': ['Menuisier', 'Presseur', 'Décorateur bois', 'fenêtres en bois'],
+            'Ferronnerie et Soudure': ['Ferronnier', 'Soudeur', 'Chaudronnier'],
+            'Plomberie et Réseaux': ['Plombier', 'Monteur de réseaux', 'tuyauterie'],
+            'Électricité et Énergie': ['Électricien', 'solaire', 'câbles', 'tableaux électriques'],
+            'Peinture et Plâtre': ['Peintre', 'Plâtrier', 'Marbrier', 'Vernisseur'],
+            'Maçonnerie et Finitions': ['Maçon', 'Carreleur', 'Crépisseur', 'isolation'],
+            'Mécanique et Machines': ['Mécanicien', 'moteurs', 'électrogènes'],
+            'Couture et Cuir': ['Tailleur', 'Couturière', 'Rapiéceur', 'Cordonnier', 'Maroquinier'],
+            'Verre et Miroiterie': ['verre', 'Verrier', 'Miroitier', 'Vitrier'],
+            'Métiers alimentaires artisanaux': ['Boulanger', 'Pâtissier', 'Fromager', 'Apiculteur', 'conserveur'],
+            'Jardinage et Espaces Verts': ['Jardinier', 'espaces verts', 'jardins', 'irrigation', 'Élagueur', 'palmiers']
+        };
+
+        const filtered = rows.filter(row => {
+            const catName = row.category_name;
+            const keys = categoryMap[catName] || [catName.substring(0, 5).toLowerCase()];
+            return keys.some(k => specialty.includes(k.toLowerCase())) || specialty.includes(catName.toLowerCase());
+        });
+        
+        res.json(filtered);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
