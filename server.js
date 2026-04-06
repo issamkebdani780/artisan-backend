@@ -8,15 +8,35 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000'],
+    origin: process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000'],
     credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
+
+// Security Headers Middleware
+app.use((req, res, next) => {
+    // Prevent clickjacking
+    res.setHeader('X-Frame-Options', 'DENY');
+    // Prevent MIME type sniffing
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    // Enable XSS protection
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    // Referrer Policy
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    // Content Security Policy
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    next();
+});
 
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'bricolopro_secret_key';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.error('ERROR: JWT_SECRET environment variable is not set!');
+    process.exit(1);
+}
 
 // Middleware to authenticate JWT
 const authenticateToken = (req, res, next) => {
@@ -31,6 +51,44 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+// Input Validation Helper
+const validateEmail = (email) => {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email) && email.length <= 255;
+};
+
+const validatePassword = (password) => {
+    // Min 8 chars, at least 1 uppercase, 1 lowercase, 1 number
+    return password && password.length >= 8 && /[A-Z]/.test(password) && /[a-z]/.test(password) && /[0-9]/.test(password);
+};
+
+const validateName = (name) => {
+    return name && name.trim().length >= 2 && name.trim().length <= 100 && !/[<>\"'`;]/.test(name);
+};
+
+// Simple Rate Limiting (in-memory)
+const loginAttempts = new Map();
+const MAX_ATTEMPTS = 5;
+const ATTEMPT_WINDOW = 15 * 60 * 1000; // 15 minutes
+
+const checkRateLimit = (email) => {
+    const now = Date.now();
+    const attempts = loginAttempts.get(email) || [];
+    const recentAttempts = attempts.filter(time => now - time < ATTEMPT_WINDOW);
+    
+    if (recentAttempts.length >= MAX_ATTEMPTS) {
+        return false; // Too many attempts
+    }
+    
+    recentAttempts.push(now);
+    loginAttempts.set(email, recentAttempts);
+    return true;
+};
+
+const clearLoginAttempts = (email) => {
+    loginAttempts.delete(email);
+};
+
 // Helper to initialize categories
 const seedCategories = async () => {
     try {
@@ -38,39 +96,49 @@ const seedCategories = async () => {
             await db.query('ALTER TABLE users MODIFY specialty VARCHAR(1000)');
             console.log('Upgraded users.specialty to VARCHAR(1000)');
         } catch (e) {
-            // Might already be upgraded or syntax err
+            // Table schema already up to date
+            console.debug('Schema already upgraded or not needed');
         }
-        
+
         const [rows] = await db.query('SELECT COUNT(*) as count FROM categories');
         if (rows[0].count === 0) {
             const categories = [
-                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux', 
-                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions', 
-                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie', 
+                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux',
+                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions',
+                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie',
                 'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
             ];
             for (const cat of categories) {
-                await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
-            }
-            console.log('Categories seeded successfully');
-        } else {
-            // For existing databases, ensure new main categories exist (e.g. Déménagement)
-            const categories = [
-                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux', 
-                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions', 
-                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie', 
-                'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
-            ];
-            for (const cat of categories) {
-                const [extRows] = await db.query('SELECT id FROM categories WHERE name = ?', [cat]);
-                if (extRows.length === 0) {
+                try {
                     await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
-                    console.log(`Category ${cat} added to existing database`);
+                } catch (insertErr) {
+                    console.error(`Failed to insert category ${cat}:`, insertErr.message);
+                }
+            }
+            console.log('Categories seeding completed');
+        } else {
+            // For existing databases, ensure new main categories exist
+            const categories = [
+                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux',
+                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions',
+                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie',
+                'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
+            ];
+            for (const cat of categories) {
+                try {
+                    const [extRows] = await db.query('SELECT id FROM categories WHERE name = ?', [cat]);
+                    if (extRows.length === 0) {
+                        await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
+                        console.log(`Category ${cat} added to existing database`);
+                    }
+                } catch (err) {
+                    console.error(`Error checking/inserting category ${cat}:`, err.message);
                 }
             }
         }
     } catch (err) {
-        console.error('Error seeding categories:', err);
+        console.error('Critical error seeding categories:', err.message);
+        // Don't crash - categories might already exist
     }
 };
 seedCategories();
@@ -81,6 +149,26 @@ seedCategories();
 app.post('/api/auth/register', async (req, res) => {
     const { name, email, password, role, specialty, experience_years, phone, address, birthday } = req.body;
     try {
+        // Input validation
+        if (!validateName(name)) {
+            return res.status(400).json({ error: 'Name must be 2-100 characters, no special characters' });
+        }
+        if (!validateEmail(email)) {
+            return res.status(400).json({ error: 'Please provide a valid email address' });
+        }
+        if (!validatePassword(password)) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters with uppercase, lowercase, and number' });
+        }
+        if (phone && !/^\d{7,15}$/.test(phone.replace(/[\s\-\(\)]/g, ''))) {
+            return res.status(400).json({ error: 'Phone number is invalid' });
+        }
+
+        // Check if email already exists
+        const [existingUser] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+        if (existingUser.length > 0) {
+            return res.status(400).json({ error: 'Email already registered' });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
         const [result] = await db.query(
             'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, birthday) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -96,21 +184,29 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
     const { email, password, role } = req.body;
     try {
+        // Rate limiting check
+        if (!checkRateLimit(email)) {
+            return res.status(429).json({ error: 'Too many login attempts. Please try again in 15 minutes.' });
+        }
+
         const [users] = await db.query('SELECT * FROM users WHERE email = ? AND role = ?', [email, role]);
         if (users.length === 0) return res.status(401).json({ error: 'User not found' });
-        
+
         const user = users[0];
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) return res.status(401).json({ error: 'Invalid credentials' });
-        
+
+        // Clear rate limit on successful login
+        clearLoginAttempts(email);
+
         const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
 
-        res.json({ 
-            message: 'Login successful', 
-            token, 
-            user: { 
-                id: user.id, 
-                name: user.name, 
+        res.json({
+            message: 'Login successful',
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
                 role: user.role,
                 email: user.email,
                 specialty: user.specialty,
@@ -118,7 +214,7 @@ app.post('/api/auth/login', async (req, res) => {
                 address: user.address,
                 profile_pic: user.profile_pic,
                 experience_years: user.experience_years
-            } 
+            }
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -127,11 +223,15 @@ app.post('/api/auth/login', async (req, res) => {
 
 // --- ARTISAN ROUTES ---
 
-// List Artisans (with optional filters)
+// List Artisans (with optional filters and pagination)
 app.get('/api/artisans', async (req, res) => {
-    const { specialty, location, category, minRating, maxPrice, availableOnly } = req.query;
+    const { specialty, location, category, minRating, maxPrice, availableOnly, limit = 20, offset = 0 } = req.query;
     
-    // Base query using GROUP BY to get the lowest price per artisan
+    // Validate pagination params
+    const pageLimit = Math.min(parseInt(limit) || 20, 100); // Max 100 per page
+    const pageOffset = Math.max(parseInt(offset) || 0, 0);
+
+    // Base query using GROUP BY to get the lowest price per artisan (NO EMAIL EXPOSED)
     let query = `
         SELECT u.id, u.name, u.specialty as role, u.rating, u.review_count as reviews, 
         u.address as location, u.is_verified as isVerified, u.profile_pic as image,
@@ -142,15 +242,15 @@ app.get('/api/artisans', async (req, res) => {
     `;
     const params = [];
 
-    if (specialty) { 
-        query += ' AND (u.specialty LIKE ? OR u.name LIKE ?)'; 
-        params.push(`%${specialty}%`, `%${specialty}%`); 
+    if (specialty) {
+        query += ' AND (u.specialty LIKE ? OR u.name LIKE ?)';
+        params.push(`%${specialty}%`, `%${specialty}%`);
     }
-    if (location) { 
-        query += ' AND u.address LIKE ?'; 
-        params.push(`%${location}%`); 
+    if (location) {
+        query += ' AND u.address LIKE ?';
+        params.push(`%${location}%`);
     }
-    if (category) { 
+    if (category) {
         const categoryMap = {
             'Menuiserie et Bois': ['Menuisier', 'Presseur', 'Décorateur bois', 'fenêtres en bois'],
             'Ferronnerie et Soudure': ['Ferronnier', 'Soudeur', 'Chaudronnier'],
@@ -169,29 +269,33 @@ app.get('/api/artisans', async (req, res) => {
         const likeClauses = keys.map(() => 'u.specialty LIKE ?').join(' OR ');
         query += ` AND (${likeClauses} OR u.specialty LIKE ?)`;
         keys.forEach(k => params.push(`%${k}%`));
-        params.push(`%${category}%`); 
+        params.push(`%${category}%`);
     }
-    if (minRating) { 
-        query += ' AND u.rating >= ?'; 
-        params.push(parseFloat(minRating)); 
+    if (minRating) {
+        query += ' AND u.rating >= ?';
+        params.push(parseFloat(minRating));
     }
     if (maxPrice) {
         const limit = parseFloat(maxPrice);
-        if (limit < 1000) { 
+        if (limit < 1000) {
             query += ' AND s.base_price <= ?';
             params.push(limit);
         }
     }
 
-    query += ' GROUP BY u.id';
+    query += ' GROUP BY u.id ORDER BY u.rating DESC, u.review_count DESC';
+    
+    // Add pagination
+    query += ` LIMIT ? OFFSET ?`;
+    params.push(pageLimit, pageOffset);
 
     if (availableOnly && (availableOnly === '1' || availableOnly === 'true')) {
-        // Just as a placeholder, availability is simulated as 'Disponible'
+        // Availability is simulated as 'Disponible'
     }
 
     try {
         const [rows] = await db.query(query, params);
-        res.json(rows);
+        res.json({ data: rows, limit: pageLimit, offset: pageOffset });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -285,6 +389,30 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
     const { service_id, booking_date, total_price } = req.body;
     const client_id = req.user.id;
     try {
+        // Validate booking parameters
+        if (!service_id || isNaN(parseInt(service_id))) {
+            return res.status(400).json({ error: 'Valid service_id is required' });
+        }
+        if (!booking_date) {
+            return res.status(400).json({ error: 'booking_date is required' });
+        }
+        const bookingDate = new Date(booking_date);
+        if (isNaN(bookingDate.getTime())) {
+            return res.status(400).json({ error: 'booking_date must be a valid date' });
+        }
+        if (bookingDate < new Date()) {
+            return res.status(400).json({ error: 'booking_date cannot be in the past' });
+        }
+        if (!total_price || isNaN(parseFloat(total_price)) || parseFloat(total_price) <= 0) {
+            return res.status(400).json({ error: 'total_price must be a positive number' });
+        }
+
+        // Verify service exists
+        const [serviceCheck] = await db.query('SELECT id FROM services WHERE id = ?', [service_id]);
+        if (serviceCheck.length === 0) {
+            return res.status(404).json({ error: 'Service not found' });
+        }
+
         const [result] = await db.query(
             'INSERT INTO bookings (client_id, service_id, booking_date, total_price, status) VALUES (?, ?, ?, ?, "pending")',
             [client_id, service_id, booking_date, total_price]
@@ -348,15 +476,15 @@ app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res)
     try {
         const [bookingRevenue] = await db.query('SELECT SUM(total_price) as total FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status = "completed"', [id]);
         const [devisRevenue] = await db.query('SELECT SUM(budget) as total FROM devis WHERE artisan_id = ? AND status = "accepté"', [id]);
-        
+
         const [totalBookings] = await db.query('SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ?', [id]);
         const [totalDevis] = await db.query('SELECT COUNT(*) as count FROM devis WHERE artisan_id = ?', [id]);
-        
+
         const [activeBookings] = await db.query('SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status IN ("pending", "confirmed")', [id]);
         const [activeDevis] = await db.query('SELECT COUNT(*) as count FROM devis WHERE artisan_id = ? AND status IN ("en attente", "accepté")', [id]);
-        
+
         const [userData] = await db.query('SELECT rating, review_count FROM users WHERE id = ?', [id]);
-        
+
         res.json({
             revenue: (parseFloat(bookingRevenue[0].total) || 0) + (parseFloat(devisRevenue[0].total) || 0),
             totalProjects: totalBookings[0].count + totalDevis[0].count,
@@ -376,6 +504,29 @@ app.post('/api/services', authenticateToken, async (req, res) => {
     const { category_id, title, description, base_price, image_url } = req.body;
     const artisan_id = req.user.id;
     try {
+        // Validate service data
+        if (!category_id || isNaN(parseInt(category_id))) {
+            return res.status(400).json({ error: 'Valid category_id is required' });
+        }
+        if (!title || title.trim().length < 3 || title.length > 100) {
+            return res.status(400).json({ error: 'Title must be between 3-100 characters' });
+        }
+        if (!description || description.trim().length < 10 || description.length > 2000) {
+            return res.status(400).json({ error: 'Description must be between 10-2000 characters' });
+        }
+        if (!base_price || isNaN(parseFloat(base_price)) || parseFloat(base_price) <= 0) {
+            return res.status(400).json({ error: 'base_price must be a positive number' });
+        }
+        if (parseFloat(base_price) > 1000000) {
+            return res.status(400).json({ error: 'base_price is too high' });
+        }
+
+        // Verify category exists
+        const [categoryCheck] = await db.query('SELECT id FROM categories WHERE id = ?', [category_id]);
+        if (categoryCheck.length === 0) {
+            return res.status(404).json({ error: 'Category not found' });
+        }
+
         const [result] = await db.query(
             'INSERT INTO services (category_id, artisan_id, title, description, base_price, image_url) VALUES (?, ?, ?, ?, ?, ?)',
             [category_id, artisan_id, title, description, base_price, image_url]
@@ -493,7 +644,7 @@ app.get('/api/devis/pending/:specialty', authenticateToken, async (req, res) => 
             const keys = categoryMap[catName] || [catName.substring(0, 5).toLowerCase()];
             return keys.some(k => specialty.includes(k.toLowerCase())) || specialty.includes(catName.toLowerCase());
         });
-        
+
         res.json(filtered);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -667,7 +818,7 @@ app.put('/api/users/:id/change-password', authenticateToken, async (req, res) =>
         const user = users[0];
         const isMatch = await bcrypt.compare(currentPassword, user.password);
         console.log(`Password match result: ${isMatch}`);
-        
+
         if (!isMatch) return res.status(400).json({ error: 'Mot de passe actuel incorrect' });
 
         const hashedNewPassword = await bcrypt.hash(newPassword, 10);
@@ -690,7 +841,7 @@ app.get('/api/admin/stats', authenticateToken, async (req, res) => {
         const [clientCount] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client"');
         const [bookingCount] = await db.query('SELECT COUNT(*) as count FROM bookings');
         const [revenue] = await db.query('SELECT SUM(total_price) as total FROM bookings WHERE status = "completed"');
-        
+
         res.json({
             artisans: artisanCount[0].count,
             clients: clientCount[0].count,
@@ -724,9 +875,69 @@ app.put('/api/admin/artisans/:id/verify', authenticateToken, async (req, res) =>
     }
 });
 
+// --- ARTISAN DASHBOARD STATS ---
+// Get Artisan Dashboard Statistics
+app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res) => {
+    const artisanId = req.params.id;
+    try {
+        // Get artisan's own stats
+        const [artisanStats] = await db.query(
+            'SELECT rating, review_count, is_verified FROM users WHERE id = ? AND role = "artisan"',
+            [artisanId]
+        );
+        if (artisanStats.length === 0) {
+            return res.status(404).json({ error: 'Artisan not found' });
+        }
+
+        // Get completed bookings count
+        const [completedBookings] = await db.query(
+            'SELECT COUNT(*) as count FROM bookings WHERE artisan_id = ? AND status = "completed"',
+            [artisanId]
+        );
+
+        // Get pending devis count  
+        const [pendingDevis] = await db.query(
+            'SELECT COUNT(*) as count FROM devis WHERE artisan_id = ? AND status = "en attente"',
+            [artisanId]
+        );
+
+        // Get total revenue
+        const [revenue] = await db.query(
+            'SELECT SUM(total_price) as total FROM bookings WHERE artisan_id = ? AND status = "completed"',
+            [artisanId]
+        );
+
+        res.json({
+            rating: artisanStats[0].rating,
+            reviewCount: artisanStats[0].review_count,
+            isVerified: artisanStats[0].is_verified,
+            completedBookings: completedBookings[0].count,
+            pendingDevis: pendingDevis[0].count,
+            totalRevenue: revenue[0].total || 0
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Health & Testing
 app.get('/', (req, res) => {
     res.send('BricoloPro API Operational');
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error('Unhandled error:', err);
+    res.status(err.status || 500).json({
+        error: process.env.NODE_ENV === 'production' 
+            ? 'Internal Server Error' 
+            : err.message
+    });
+});
+
+// 404 Handler
+app.use((req, res) => {
+    res.status(404).json({ error: 'Endpoint not found' });
 });
 
 app.listen(PORT, () => {
