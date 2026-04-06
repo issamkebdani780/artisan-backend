@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
     address VARCHAR(255),
     birthday DATE,
     experience_years INT DEFAULT 0,
-    specialty VARCHAR(100),
+    specialty TEXT,
     rating DECIMAL(2,1) DEFAULT 0,
     review_count INT DEFAULT 0,
     is_verified BOOLEAN DEFAULT FALSE,

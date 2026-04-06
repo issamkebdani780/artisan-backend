@@ -31,22 +31,39 @@ const authenticateToken = (req, res, next) => {
 // Helper to initialize categories
 const seedCategories = async () => {
     try {
+        try {
+            await db.query('ALTER TABLE users MODIFY specialty VARCHAR(1000)');
+            console.log('Upgraded users.specialty to VARCHAR(1000)');
+        } catch (e) {
+            // Might already be upgraded or syntax err
+        }
+        
         const [rows] = await db.query('SELECT COUNT(*) as count FROM categories');
         if (rows[0].count === 0) {
             const categories = [
-                'Plomberie', 'Électricité', 'Peinture', 'Menuiserie', 
-                'Chauffage', 'Climatisation', 'Maçonnerie', 'Nettoyage', 'Déménagement'
+                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux', 
+                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions', 
+                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie', 
+                'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
             ];
             for (const cat of categories) {
                 await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
             }
             console.log('Categories seeded successfully');
         } else {
-            // Ensure Déménagement exists for users upgrading their database
-            const [demRows] = await db.query('SELECT id FROM categories WHERE name = "Déménagement"');
-            if (demRows.length === 0) {
-                await db.query('INSERT INTO categories (name) VALUES ("Déménagement")');
-                console.log('Déménagement category added to existing database');
+            // For existing databases, ensure new main categories exist (e.g. Déménagement)
+            const categories = [
+                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux', 
+                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions', 
+                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie', 
+                'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
+            ];
+            for (const cat of categories) {
+                const [extRows] = await db.query('SELECT id FROM categories WHERE name = ?', [cat]);
+                if (extRows.length === 0) {
+                    await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
+                    console.log(`Category ${cat} added to existing database`);
+                }
             }
         }
     } catch (err) {
@@ -131,10 +148,25 @@ app.get('/api/artisans', async (req, res) => {
         params.push(`%${location}%`); 
     }
     if (category) { 
-        // More flexible matching for categories
-        const root = category.substring(0, 5); 
-        query += ' AND (u.specialty LIKE ? OR u.specialty LIKE ?)'; 
-        params.push(`%${category}%`, `%${root}%`); 
+        const categoryMap = {
+            'Menuiserie et Bois': ['Menuisier', 'Presseur', 'Décorateur bois', 'fenêtres en bois'],
+            'Ferronnerie et Soudure': ['Ferronnier', 'Soudeur', 'Chaudronnier'],
+            'Plomberie et Réseaux': ['Plombier', 'Monteur de réseaux', 'tuyauterie'],
+            'Électricité et Énergie': ['Électricien', 'solaire', 'câbles', 'tableaux électriques'],
+            'Peinture et Plâtre': ['Peintre', 'Plâtrier', 'Marbrier', 'Vernisseur'],
+            'Maçonnerie et Finitions': ['Maçon', 'Carreleur', 'Crépisseur', 'isolation'],
+            'Mécanique et Machines': ['Mécanicien', 'moteurs', 'électrogènes'],
+            'Couture et Cuir': ['Tailleur', 'Couturière', 'Rapiéceur', 'Cordonnier', 'Maroquinier'],
+            'Verre et Miroiterie': ['verre', 'Verrier', 'Miroitier', 'Vitrier'],
+            'Métiers alimentaires artisanaux': ['Boulanger', 'Pâtissier', 'Fromager', 'Apiculteur', 'conserveur'],
+            'Jardinage et Espaces Verts': ['Jardinier', 'espaces verts', 'jardins', 'irrigation', 'Élagueur', 'palmiers']
+        };
+
+        const keys = categoryMap[category] || [category.substring(0, 5)];
+        const likeClauses = keys.map(() => 'u.specialty LIKE ?').join(' OR ');
+        query += ` AND (${likeClauses} OR u.specialty LIKE ?)`;
+        keys.forEach(k => params.push(`%${k}%`));
+        params.push(`%${category}%`); 
     }
     if (minRating) { 
         query += ' AND u.rating >= ?'; 
