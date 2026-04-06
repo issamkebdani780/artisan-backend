@@ -182,7 +182,7 @@ app.post('/api/auth/register', (req, res, next) => {
 
 // Handler for artisan registration
 async function handleArtisanRegistration(req, res) {
-    const { name, email, password, specialty, experience_years, phone, address, birthday } = req.body;
+    const { name, email, password, specialty, experience_years, phone, address, wilaya_id, commune_id, birthday } = req.body;
     try {
         // Input validation
         if (!validateName(name)) {
@@ -222,8 +222,8 @@ async function handleArtisanRegistration(req, res) {
         const documentsUrls = req.files.map(f => f.path).join(','); // Comma-separated URLs
 
         const [result] = await db.query(
-            'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, birthday, profile_pic, artisan_documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [name, email, hashedPassword, 'artisan', specialty, experience_years || 0, phone, address, birthday, profilePicUrl, documentsUrls]
+            'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, wilaya_id, commune_id, birthday, profile_pic, artisan_documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [name, email, hashedPassword, 'artisan', specialty, experience_years || 0, phone, address, wilaya_id, commune_id, birthday, profilePicUrl, documentsUrls]
         );
 
         res.status(201).json({ 
@@ -239,7 +239,7 @@ async function handleArtisanRegistration(req, res) {
 
 // Handler for client registration
 async function handleClientRegistration(req, res) {
-    const { name, email, password, phone, address, birthday } = req.body;
+    const { name, email, password, phone, address, wilaya_id, commune_id, birthday } = req.body;
     try {
         // Input validation
         if (!validateName(name)) {
@@ -265,8 +265,8 @@ async function handleClientRegistration(req, res) {
         const profilePicUrl = req.file ? req.file.path : null; // Cloudinary URL or null
 
         const [result] = await db.query(
-            'INSERT INTO users (name, email, password, role, phone, address, birthday, profile_pic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [name, email, hashedPassword, 'client', phone, address, birthday, profilePicUrl]
+            'INSERT INTO users (name, email, password, role, phone, address, wilaya_id, commune_id, birthday, profile_pic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [name, email, hashedPassword, 'client', phone, address, wilaya_id, commune_id, birthday, profilePicUrl]
         );
 
         res.status(201).json({ 
@@ -578,6 +578,30 @@ app.get('/api/categories', async (req, res) => {
     }
 });
 
+// List wilayas
+app.get('/api/wilayas', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM wilaya');
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// List communes by wilaya
+app.get('/api/communes', async (req, res) => {
+    const { wilaya_id } = req.query;
+    if (!wilaya_id) {
+        return res.status(400).json({ error: 'wilaya_id is required' });
+    }
+    try {
+        const [rows] = await db.query('SELECT * FROM commune WHERE wilaya_id = ?', [wilaya_id]);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // --- BOOKING ROUTES ---
 
 // Create Booking
@@ -761,12 +785,12 @@ app.delete('/api/services/:id', authenticateToken, async (req, res) => {
 
 // Create Devis
 app.post('/api/devis', authenticateToken, async (req, res) => {
-    const { category_id, description, budget, date, artisan_id } = req.body;
+    const { category_id, description, budget, wilaya_id, commune_id, date, artisan_id } = req.body;
     const client_id = req.user.id;
     try {
         const [result] = await db.query(
-            'INSERT INTO devis (client_id, category_id, description, budget, date, artisan_id, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            [client_id, category_id, description, budget, date, artisan_id || null, 'en attente']
+            'INSERT INTO devis (client_id, category_id, description, budget, wilaya_id, commune_id, date, artisan_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [client_id, category_id, description, budget, wilaya_id, commune_id, date, artisan_id || null, 'en attente']
         );
         res.status(201).json({ message: 'Devis created', devisId: result.insertId });
     } catch (err) {
