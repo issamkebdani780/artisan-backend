@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
     password VARCHAR(255) NOT NULL,
     role ENUM('client', 'artisan', 'admin') DEFAULT 'client',
     profile_pic VARCHAR(255),
+    artisan_documents VARCHAR(2000),
     phone VARCHAR(20),
     address VARCHAR(255),
     birthday DATE,

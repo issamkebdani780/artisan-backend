@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const db = require('./config/db');
+const { uploadProfilePic, uploadDocuments } = require('./config/upload');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -145,9 +146,100 @@ seedCategories();
 
 // --- AUTH ROUTES ---
 
-// Registration (General for Clients & Artisans)
-app.post('/api/auth/register', async (req, res) => {
-    const { name, email, password, role, specialty, experience_years, phone, address, birthday } = req.body;
+// Registration with File Upload (General for Clients & Artisans)
+// For artisans: /api/auth/register?role=artisan with profilePic and documents files
+// For clients: /api/auth/register with profilePic file (optional)
+app.post('/api/auth/register', (req, res, next) => {
+    // Determine which upload middleware to use based on role
+    const role = req.body.role || req.query.role || 'client';
+    
+    if (role === 'artisan') {
+        // For artisans: upload profile picture and documents
+        uploadProfilePic(req, res, (err) => {
+            if (err) {
+                return res.status(400).json({ error: `Profile picture upload error: ${err.message}` });
+            }
+            uploadDocuments(req, res, (docErr) => {
+                if (docErr) {
+                    return res.status(400).json({ error: `Document upload error: ${docErr.message}` });
+                }
+                handleArtisanRegistration(req, res);
+            });
+        });
+    } else {
+        // For clients: upload only profile picture (optional)
+        uploadProfilePic(req, res, (err) => {
+            if (err && err.message) {
+                // If upload fails but it's not a file selection error, continue
+                if (err.message.includes('allowed')) {
+                    return res.status(400).json({ error: `Profile picture upload error: ${err.message}` });
+                }
+            }
+            handleClientRegistration(req, res);
+        });
+    }
+});
+
+// Handler for artisan registration
+async function handleArtisanRegistration(req, res) {
+    const { name, email, password, specialty, experience_years, phone, address, birthday } = req.body;
+    try {
+        // Input validation
+        if (!validateName(name)) {
+            return res.status(400).json({ error: 'Name must be 2-100 characters, no special characters' });
+        }
+        if (!validateEmail(email)) {
+            return res.status(400).json({ error: 'Please provide a valid email address' });
+        }
+        if (!validatePassword(password)) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters with uppercase, lowercase, and number' });
+        }
+        if (!specialty || specialty.trim().length === 0) {
+            return res.status(400).json({ error: 'Specialty is required for artisans' });
+        }
+        if (phone && !/^\d{7,15}$/.test(phone.replace(/[\s\-\(\)]/g, ''))) {
+            return res.status(400).json({ error: 'Phone number is invalid' });
+        }
+
+        // Validate file uploads
+        if (!req.file) {
+            return res.status(400).json({ error: 'Profile picture is required for artisans' });
+        }
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ error: 'At least one document is required for artisans' });
+        }
+
+        // Check if email already exists
+        const [existingUser] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+        if (existingUser.length > 0) {
+            return res.status(400).json({ error: 'Email already registered' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Get Cloudinary URLs
+        const profilePicUrl = req.file.path; // Cloudinary URL
+        const documentsUrls = req.files.map(f => f.path).join(','); // Comma-separated URLs
+
+        const [result] = await db.query(
+            'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, birthday, profile_pic, artisan_documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [name, email, hashedPassword, 'artisan', specialty, experience_years || 0, phone, address, birthday, profilePicUrl, documentsUrls]
+        );
+
+        res.status(201).json({ 
+            message: 'Artisan registered successfully', 
+            userId: result.insertId,
+            profilePic: profilePicUrl,
+            documents: documentsUrls
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// Handler for client registration
+async function handleClientRegistration(req, res) {
+    const { name, email, password, phone, address, birthday } = req.body;
     try {
         // Input validation
         if (!validateName(name)) {
@@ -170,15 +262,22 @@ app.post('/api/auth/register', async (req, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
+        const profilePicUrl = req.file ? req.file.path : null; // Cloudinary URL or null
+
         const [result] = await db.query(
-            'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, birthday) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [name, email, hashedPassword, role || 'client', specialty, experience_years, phone, address, birthday]
+            'INSERT INTO users (name, email, password, role, phone, address, birthday, profile_pic) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [name, email, hashedPassword, 'client', phone, address, birthday, profilePicUrl]
         );
-        res.status(201).json({ message: 'User registered successfully', userId: result.insertId });
+
+        res.status(201).json({ 
+            message: 'User registered successfully', 
+            userId: result.insertId,
+            profilePic: profilePicUrl
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
-});
+}
 
 // Login
 app.post('/api/auth/login', async (req, res) => {
@@ -321,6 +420,103 @@ app.get('/api/artisans/:id', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// Get Artisan Documents
+app.get('/api/artisans/:id/documents', authenticateToken, async (req, res) => {
+    try {
+        // Check if user is the artisan or admin
+        if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
+            return res.status(403).json({ error: 'You do not have permission to view these documents' });
+        }
+
+        const [rows] = await db.query('SELECT id, name, artisan_documents, profile_pic FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Artisan not found' });
+
+        const artisan = rows[0];
+        const documents = artisan.artisan_documents ? artisan.artisan_documents.split(',').filter(d => d.trim()) : [];
+        
+        res.json({
+            id: artisan.id,
+            name: artisan.name,
+            profilePic: artisan.profile_pic,
+            documents: documents
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Upload Additional Documents for Artisan
+app.post('/api/artisans/:id/documents', authenticateToken, (req, res) => {
+    // Check if user is the artisan or admin
+    if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
+        return res.status(403).json({ error: 'You do not have permission to upload documents' });
+    }
+
+    uploadDocuments(req, res, async (err) => {
+        if (err) {
+            return res.status(400).json({ error: `Document upload error: ${err.message}` });
+        }
+
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({ error: 'At least one document is required' });
+        }
+
+        try {
+            const newDocumentUrls = req.files.map(f => f.path).join(',');
+
+            // Get existing documents
+            const [rows] = await db.query('SELECT artisan_documents FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
+            if (rows.length === 0) {
+                return res.status(404).json({ error: 'Artisan not found' });
+            }
+
+            const existingDocs = rows[0].artisan_documents ? rows[0].artisan_documents + ',' : '';
+            const allDocuments = existingDocs + newDocumentUrls;
+
+            await db.query('UPDATE users SET artisan_documents = ? WHERE id = ?', [allDocuments, req.params.id]);
+
+            res.json({
+                message: 'Documents uploaded successfully',
+                documents: allDocuments.split(',').filter(d => d.trim()),
+                uploadedCount: req.files.length
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+});
+
+// Update Artisan Profile Picture
+app.post('/api/artisans/:id/profile-picture', authenticateToken, (req, res) => {
+    // Check if user is the artisan or admin
+    if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
+        return res.status(403).json({ error: 'You do not have permission to update this profile' });
+    }
+
+    uploadProfilePic(req, res, async (err) => {
+        if (err) {
+            return res.status(400).json({ error: `Profile picture upload error: ${err.message}` });
+        }
+
+        if (!req.file) {
+            return res.status(400).json({ error: 'Profile picture is required' });
+        }
+
+        try {
+            const profilePicUrl = req.file.path;
+
+            await db.query('UPDATE users SET profile_pic = ? WHERE id = ?', [profilePicUrl, req.params.id]);
+
+            res.json({
+                message: 'Profile picture updated successfully',
+                profilePic: profilePicUrl
+            });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
 });
 
 // --- SERVICE ROUTES ---
