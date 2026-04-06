@@ -427,6 +427,18 @@ app.post('/api/devis', authenticateToken, async (req, res) => {
     }
 });
 
+// Delete Devis (Client only)
+app.delete('/api/devis/:id', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM devis WHERE id = ? AND client_id = ?', [req.params.id, req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'Devis not found or unauthorized' });
+        await db.query('DELETE FROM devis WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Devis deleted' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Get User Devis (Client or Artisan)
 app.get('/api/devis/user/:id', authenticateToken, async (req, res) => {
     const userId = req.params.id;
