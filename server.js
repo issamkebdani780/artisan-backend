@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const db = require('./config/db');
-const { uploadProfilePic, uploadDocuments, uploadCombined } = require('./config/upload');
+const { uploadProfilePic, uploadDocuments, uploadCombined, uploadServiceImage } = require('./config/upload');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -704,26 +704,25 @@ app.put('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 
 // --- SERVICE MANAGEMENT ---
 
-// Create Service
-app.post('/api/services', authenticateToken, async (req, res) => {
-    const { category_id, title, description, base_price, image_url } = req.body;
+// Create Service with Image Upload
+app.post('/api/services', authenticateToken, uploadServiceImage, async (req, res) => {
+    const { category_id, title, description, base_price } = req.body;
     const artisan_id = req.user.id;
     try {
+        const imageUrl = req.file ? req.file.path : (req.body.image_url || null);
+        
         // Validate service data
         if (!category_id || isNaN(parseInt(category_id))) {
             return res.status(400).json({ error: 'Valid category_id is required' });
         }
-        if (!title || title.trim().length < 3 || title.length > 100) {
-            return res.status(400).json({ error: 'Title must be between 3-100 characters' });
+        if (!title || title.trim().length < 2 || title.length > 255) {
+            return res.status(400).json({ error: 'Title must be between 2-255 characters' });
         }
-        if (!description || description.trim().length < 10 || description.length > 2000) {
-            return res.status(400).json({ error: 'Description must be between 10-2000 characters' });
+        if (!description || description.trim().length < 5) {
+            return res.status(400).json({ error: 'Description must be at least 5 characters' });
         }
         if (!base_price || isNaN(parseFloat(base_price)) || parseFloat(base_price) <= 0) {
             return res.status(400).json({ error: 'base_price must be a positive number' });
-        }
-        if (parseFloat(base_price) > 1000000) {
-            return res.status(400).json({ error: 'base_price is too high' });
         }
 
         // Verify category exists
@@ -734,23 +733,28 @@ app.post('/api/services', authenticateToken, async (req, res) => {
 
         const [result] = await db.query(
             'INSERT INTO services (category_id, artisan_id, title, description, base_price, image_url) VALUES (?, ?, ?, ?, ?, ?)',
-            [category_id, artisan_id, title, description, base_price, image_url]
+            [category_id, artisan_id, title, description, base_price, imageUrl]
         );
-        res.status(201).json({ message: 'Service created', serviceId: result.insertId });
+        res.status(201).json({ message: 'Service created', serviceId: result.insertId, image_url: imageUrl });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-// Update Service
-app.put('/api/services/:id', authenticateToken, async (req, res) => {
-    const { category_id, title, description, base_price, image_url } = req.body;
+// Update Service with Optional Image Upload
+app.put('/api/services/:id', authenticateToken, uploadServiceImage, async (req, res) => {
+    const { category_id, title, description, base_price } = req.body;
     try {
+        let imageUrl = req.body.image_url;
+        if (req.file) {
+            imageUrl = req.file.path;
+        }
+
         await db.query(
             'UPDATE services SET category_id = ?, title = ?, description = ?, base_price = ?, image_url = ? WHERE id = ? AND artisan_id = ?',
-            [category_id, title, description, base_price, image_url, req.params.id, req.user.id]
+            [category_id, title, description, base_price, imageUrl, req.params.id, req.user.id]
         );
-        res.json({ message: 'Service updated' });
+        res.json({ message: 'Service updated', image_url: imageUrl });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

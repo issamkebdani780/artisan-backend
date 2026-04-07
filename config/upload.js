@@ -31,6 +31,17 @@ const documentsStorage = new CloudinaryStorage({
     }
 });
 
+// Storage configuration for service images
+const servicesStorage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'bericoli/services',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+        resource_type: 'auto',
+        quality: 'auto:good'
+    }
+});
+
 // Multer configuration for single profile picture
 const uploadProfilePic = multer({
     storage: profilePicStorage,
@@ -69,6 +80,22 @@ const uploadDocuments = multer({
     }
 });
 
+// Multer configuration for single service image
+const uploadServiceImage = multer({
+    storage: servicesStorage,
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        if (allowedMimes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only image files are allowed for services'));
+        }
+    }
+});
+
 // Storage config for combined uploads
 const combinedStorage = new CloudinaryStorage({
     cloudinary: cloudinary,
@@ -102,5 +129,6 @@ module.exports = {
         { name: 'profilePic', maxCount: 1 },
         { name: 'documents', maxCount: 5 }
     ]),
+    uploadServiceImage: uploadServiceImage.single('serviceImage'),
     cloudinary
 };
