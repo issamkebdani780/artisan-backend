@@ -439,6 +439,30 @@ app.get('/api/artisans', async (req, res) => {
     }
 });
 
+// Get Public Stats for landing page
+app.get('/api/public/stats', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                (SELECT COUNT(*) FROM users WHERE role = 'client') as clients,
+                (SELECT COUNT(*) FROM users WHERE role = 'artisan') as artisans,
+                (SELECT COUNT(*) FROM devis) as projects
+        `;
+        const [rows] = await db.query(query);
+        const data = rows[0] || { clients: 0, artisans: 0, projects: 0 };
+        
+        console.log('✅ Public stats fetched:', data);
+        res.json({
+            clients: parseInt(data.clients) || 0,
+            artisans: parseInt(data.artisans) || 0,
+            projects: parseInt(data.projects) || 0
+        });
+    } catch (err) {
+        console.error('❌ Stats API Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Get Featured Artisans
 app.get('/api/artisans/featured', async (req, res) => {
     try {
