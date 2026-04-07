@@ -1053,14 +1053,49 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
 
 // Delete User Account
 app.delete('/api/users/:id', authenticateToken, async (req, res) => {
-    if (parseInt(req.params.id) !== req.user.id) {
+    const userId = req.params.id;
+    if (parseInt(userId) !== req.user.id) {
         return res.status(403).json({ error: 'Unauthorized to delete this account' });
     }
+    
+    let connection;
     try {
-        await db.query('DELETE FROM users WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Account deleted successfully' });
+        connection = await db.getConnection();
+        await connection.beginTransaction();
+
+        // Manual cleanup to ensure no FK constraints block deletion
+        // 1. Delete reviews involving this user
+        await connection.query('DELETE FROM reviews WHERE client_id = ? OR artisan_id = ?', [userId, userId]);
+        
+        // 2. Delete bookings
+        await connection.query('DELETE FROM bookings WHERE client_id = ?', [userId]);
+        // Also delete bookings for this artisan's services
+        await connection.query('DELETE FROM bookings WHERE service_id IN (SELECT id FROM services WHERE artisan_id = ?)', [userId]);
+
+        // 3. Delete services
+        await connection.query('DELETE FROM services WHERE artisan_id = ?', [userId]);
+
+        // 4. Handle Devis (quotes)
+        // If they are the artisan, just unassign them
+        await connection.query('UPDATE devis SET artisan_id = NULL WHERE artisan_id = ?', [userId]);
+        // If they are the client, delete their requests
+        await connection.query('DELETE FROM devis WHERE client_id = ?', [userId]);
+
+        // 5. Finally delete the user
+        const [result] = await connection.query('DELETE FROM users WHERE id = ?', [userId]);
+        
+        if (result.affectedRows === 0) {
+            throw new Error('User not found');
+        }
+
+        await connection.commit();
+        res.json({ message: 'Compte supprimé avec succès' });
     } catch (err) {
+        if (connection) await connection.rollback();
+        console.error('Delete User Error:', err);
         res.status(500).json({ error: err.message });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
