@@ -627,12 +627,15 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'booking_date is required' });
         }
         const bookingDate = new Date(booking_date);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
         if (isNaN(bookingDate.getTime())) {
             return res.status(400).json({ error: 'booking_date must be a valid date' });
         }
-        if (bookingDate < new Date()) {
-            return res.status(400).json({ error: 'booking_date cannot be in the past' });
+        if (bookingDate < today) {
+            return res.status(400).json({ error: 'La date de rendez-vous ne peut pas être dans le passé' });
         }
+
         if (!total_price || isNaN(parseFloat(total_price)) || parseFloat(total_price) <= 0) {
             return res.status(400).json({ error: 'total_price must be a positive number' });
         }
@@ -777,6 +780,16 @@ app.post('/api/devis', authenticateToken, async (req, res) => {
     const { category_id, description, budget, wilaya_id, commune_id, date, artisan_id } = req.body;
     const client_id = req.user.id;
     try {
+        // Validate date is not in the past
+        if (date) {
+            const selectedDate = new Date(date);
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            if (selectedDate < today) {
+                return res.status(400).json({ error: 'La date d\'intervention ne peut pas être dans le passé' });
+            }
+        }
+
         const [result] = await db.query(
             'INSERT INTO devis (client_id, category_id, description, budget, wilaya_id, commune_id, date, artisan_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [client_id, category_id, description, budget, wilaya_id, commune_id, date, artisan_id || null, 'en attente']
