@@ -477,7 +477,7 @@ app.get('/api/artisans/featured', async (req, res) => {
 // Get Single Artisan Details
 app.get('/api/artisans/:id', async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT id, name, email, specialty, experience_years, phone, address, is_verified, rating, review_count, profile_pic, created_at FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
+        const [rows] = await db.query('SELECT id, name, email, specialty, experience_years, phone, address, is_verified, rating, review_count, profile_pic, artisan_documents, created_at FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
         if (rows.length === 0) return res.status(404).json({ error: 'Artisan not found' });
         res.json(rows[0]);
     } catch (err) {
