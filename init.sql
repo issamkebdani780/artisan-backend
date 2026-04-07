@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS wilaya (
     name VARCHAR(100) NOT NULL
 );
 
+
+
 -- Insert sample wilayas (Algerian provinces)
 INSERT INTO wilaya (id, name) VALUES
 (1, 'Adrar'),
