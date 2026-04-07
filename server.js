@@ -9,7 +9,17 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors({
-    origin: process.env.FRONTEND_URL ? [process.env.FRONTEND_URL] : ['http://bericolipro.linguaflo.me:5173', 'http://bericolipro.linguaflo.me:3000', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000'],
+    origin: process.env.FRONTEND_URL
+        ? [process.env.FRONTEND_URL]
+        : [
+            'https://bericolipro.linguaflo.me',
+            'http://bericolipro.linguaflo.me',
+            'http://bericolipro.linguaflo.me:5173',
+            'http://127.0.0.1:5173',
+            'http://127.0.0.1:3000',
+            'http://localhost:5173',
+            'http://localhost:3000'
+          ],
     credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -690,32 +700,7 @@ app.put('/api/bookings/:id/status', authenticateToken, async (req, res) => {
     }
 });
 
-// Artisan Dashboard Stats
-app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res) => {
-    const id = req.params.id;
-    try {
-        const [bookingRevenue] = await db.query('SELECT SUM(total_price) as total FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status = "completed"', [id]);
-        const [devisRevenue] = await db.query('SELECT SUM(budget) as total FROM devis WHERE artisan_id = ? AND status = "accepté"', [id]);
-
-        const [totalBookings] = await db.query('SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ?', [id]);
-        const [totalDevis] = await db.query('SELECT COUNT(*) as count FROM devis WHERE artisan_id = ?', [id]);
-
-        const [activeBookings] = await db.query('SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status IN ("pending", "confirmed")', [id]);
-        const [activeDevis] = await db.query('SELECT COUNT(*) as count FROM devis WHERE artisan_id = ? AND status IN ("en attente", "accepté")', [id]);
-
-        const [userData] = await db.query('SELECT rating, review_count FROM users WHERE id = ?', [id]);
-
-        res.json({
-            revenue: (parseFloat(bookingRevenue[0].total) || 0) + (parseFloat(devisRevenue[0].total) || 0),
-            totalProjects: totalBookings[0].count + totalDevis[0].count,
-            activeProjects: activeBookings[0].count + activeDevis[0].count,
-            rating: userData[0]?.rating || 0,
-            reviews: userData[0]?.review_count || 0
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+// (Dashboard stats route is defined below near line 1100)
 
 // --- SERVICE MANAGEMENT ---
 
@@ -1109,31 +1094,48 @@ app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res)
             return res.status(404).json({ error: 'Artisan not found' });
         }
 
-        // Get completed bookings count
-        const [completedBookings] = await db.query(
-            'SELECT COUNT(*) as count FROM bookings WHERE artisan_id = ? AND status = "completed"',
+        // Revenue from bookings (via services join — bookings has no direct artisan_id)
+        const [bookingRevenue] = await db.query(
+            'SELECT SUM(b.total_price) as total FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status = "completed"',
+            [artisanId]
+        );
+        // Revenue from accepted devis
+        const [devisRevenue] = await db.query(
+            'SELECT SUM(budget) as total FROM devis WHERE artisan_id = ? AND status = "accepté"',
             [artisanId]
         );
 
-        // Get pending devis count  
+        // Booking counts (via services join)
+        const [completedBookings] = await db.query(
+            'SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status = "completed"',
+            [artisanId]
+        );
+        const [activeBookings] = await db.query(
+            'SELECT COUNT(*) as count FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status IN ("pending", "confirmed")',
+            [artisanId]
+        );
+
+        // Devis counts
         const [pendingDevis] = await db.query(
             'SELECT COUNT(*) as count FROM devis WHERE artisan_id = ? AND status = "en attente"',
             [artisanId]
         );
-
-        // Get total revenue
-        const [revenue] = await db.query(
-            'SELECT SUM(total_price) as total FROM bookings WHERE artisan_id = ? AND status = "completed"',
+        const [totalDevis] = await db.query(
+            'SELECT COUNT(*) as count FROM devis WHERE artisan_id = ?',
             [artisanId]
         );
+
+        const totalRevenue = (parseFloat(bookingRevenue[0].total) || 0) + (parseFloat(devisRevenue[0].total) || 0);
 
         res.json({
             rating: artisanStats[0].rating,
             reviewCount: artisanStats[0].review_count,
             isVerified: artisanStats[0].is_verified,
             completedBookings: completedBookings[0].count,
+            activeBookings: activeBookings[0].count,
             pendingDevis: pendingDevis[0].count,
-            totalRevenue: revenue[0].total || 0
+            totalDevis: totalDevis[0].count,
+            totalRevenue
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
