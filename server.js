@@ -7,6 +7,35 @@ const { uploadProfilePic, uploadDocuments, uploadCombined, uploadServiceImage } 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Database Schema Check & Migration
+(async () => {
+    try {
+        console.log('Running database schema checks...');
+        
+        // 1. Check Reviews Table
+        const [columns] = await db.query('SHOW COLUMNS FROM reviews');
+        const colNames = columns.map(c => c.Field);
+        
+        if (!colNames.includes('artisan_id')) {
+            await db.query('ALTER TABLE reviews ADD COLUMN artisan_id INT AFTER booking_id');
+            console.log('Migrated: Added artisan_id to reviews table');
+        }
+        if (!colNames.includes('client_id')) {
+            await db.query('ALTER TABLE reviews ADD COLUMN client_id INT AFTER artisan_id');
+            console.log('Migrated: Added client_id to reviews table');
+        }
+
+        // 2. Add foreign keys if possible (ignore if already exist)
+        try {
+            await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
+            await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
+        } catch (fkErr) { /* Ignore if FK already exists */ }
+
+    } catch (err) {
+        console.error('Database migration check error:', err.message);
+    }
+})();
+
 // Middleware
 app.use(cors({
     origin: process.env.FRONTEND_URL
@@ -1008,7 +1037,7 @@ app.get('/api/reviews/service/:id', async (req, res) => {
 
 // --- PROFILE ROUTES ---
 
-// Update Profile
+// Update User Profile
 app.put('/api/users/:id', authenticateToken, async (req, res) => {
     const { name, phone, address, specialty, experience_years, profile_pic } = req.body;
     try {
@@ -1017,6 +1046,19 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
             [name, phone, address, specialty, experience_years, profile_pic, req.params.id]
         );
         res.json({ message: 'Profile updated' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Delete User Account
+app.delete('/api/users/:id', authenticateToken, async (req, res) => {
+    if (parseInt(req.params.id) !== req.user.id) {
+        return res.status(403).json({ error: 'Unauthorized to delete this account' });
+    }
+    try {
+        await db.query('DELETE FROM users WHERE id = ?', [req.params.id]);
+        res.json({ message: 'Account deleted successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
