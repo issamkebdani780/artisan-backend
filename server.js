@@ -107,8 +107,24 @@ const seedCategories = async () => {
             await db.query('ALTER TABLE users MODIFY specialty VARCHAR(1000)');
             console.log('Upgraded users.specialty to VARCHAR(1000)');
         } catch (e) {
-            // Table schema already up to date
             console.debug('Schema already upgraded or not needed');
+        }
+
+        // Auto-migrate devis table to ensure location fields exist
+        try {
+            await db.query('ALTER TABLE devis ADD COLUMN wilaya_id INT');
+            await db.query('ALTER TABLE devis ADD CONSTRAINT fk_devis_wilaya FOREIGN KEY (wilaya_id) REFERENCES wilaya(id) ON DELETE SET NULL');
+            console.log('Added wilaya_id to devis table');
+        } catch (e) {
+            console.debug('wilaya_id column already exists in devis or could not be added');
+        }
+        
+        try {
+            await db.query('ALTER TABLE devis ADD COLUMN commune_id INT');
+            await db.query('ALTER TABLE devis ADD CONSTRAINT fk_devis_commune FOREIGN KEY (commune_id) REFERENCES commune(id) ON DELETE SET NULL');
+            console.log('Added commune_id to devis table');
+        } catch (e) {
+            console.debug('commune_id column already exists in devis or could not be added');
         }
 
         const [rows] = await db.query('SELECT COUNT(*) as count FROM categories');
