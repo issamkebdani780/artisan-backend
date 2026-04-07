@@ -414,10 +414,10 @@ app.get('/api/artisans', async (req, res) => {
         params.push(parseFloat(minRating));
     }
     if (maxPrice) {
-        const limit = parseFloat(maxPrice);
-        if (limit < 1000) {
+        const limitPrice = parseFloat(maxPrice);
+        if (!isNaN(limitPrice)) {
             query += ' AND s.base_price <= ?';
-            params.push(limit);
+            params.push(limitPrice);
         }
     }
 
