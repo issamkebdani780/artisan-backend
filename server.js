@@ -41,6 +41,7 @@ app.use(cors({
     origin: process.env.FRONTEND_URL
         ? [process.env.FRONTEND_URL]
         : [
+            'https://mihnati-pink.vercel.app',
             'https://bericolipro.linguaflo.me',
             'http://bericolipro.linguaflo.me',
             'http://bericolipro.linguaflo.me:5173',
