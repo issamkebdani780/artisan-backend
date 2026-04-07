@@ -987,10 +987,10 @@ app.post('/api/reviews', authenticateToken, async (req, res) => {
         if (artisan_id) {
             await db.query(`
                 UPDATE users SET
-                    review_count = review_count + 1,
-                    rating = (SELECT ROUND(AVG(rating), 1) FROM reviews WHERE artisan_id = ?)
+                    review_count = (SELECT COUNT(*) FROM reviews WHERE artisan_id = ?),
+                    rating = (SELECT IFNULL(ROUND(AVG(rating), 1), 0) FROM reviews WHERE artisan_id = ?)
                 WHERE id = ?
-            `, [artisan_id, artisan_id]);
+            `, [artisan_id, artisan_id, artisan_id]);
         }
 
         res.status(201).json({ message: 'Avis soumis avec succès', reviewId: result.insertId });
