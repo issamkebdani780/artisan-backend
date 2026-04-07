@@ -69,8 +69,38 @@ const uploadDocuments = multer({
     }
 });
 
+// Storage config for combined uploads
+const combinedStorage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: async (req, file) => {
+        if (file.fieldname === 'profilePic') {
+            return {
+                folder: 'bericoli/profile-pictures',
+                allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp'],
+                resource_type: 'auto',
+                quality: 'auto:good'
+            };
+        } else {
+            return {
+                folder: 'bericoli/artisan-documents',
+                allowed_formats: ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png'],
+                resource_type: 'auto'
+            };
+        }
+    }
+});
+
+const uploadCombined = multer({
+    storage: combinedStorage,
+    limits: { fileSize: 10 * 1024 * 1024 }
+});
+
 module.exports = {
     uploadProfilePic: uploadProfilePic.single('profilePic'),
-    uploadDocuments: uploadDocuments.array('documents', 5), // Maximum 5 documents
+    uploadDocuments: uploadDocuments.array('documents', 5),
+    uploadCombined: uploadCombined.fields([
+        { name: 'profilePic', maxCount: 1 },
+        { name: 'documents', maxCount: 5 }
+    ]),
     cloudinary
 };

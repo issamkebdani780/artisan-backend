@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const db = require('./config/db');
-const { uploadProfilePic, uploadDocuments } = require('./config/upload');
+const { uploadProfilePic, uploadDocuments, uploadCombined } = require('./config/upload');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -159,34 +159,14 @@ seedCategories();
 // Registration with File Upload (General for Clients & Artisans)
 // For artisans: /api/auth/register?role=artisan with profilePic and documents files
 // For clients: /api/auth/register with profilePic file (optional)
-app.post('/api/auth/register', (req, res, next) => {
-    // Determine which upload middleware to use based on role
+app.post('/api/auth/register', uploadCombined, (req, res, next) => {
+    // Now that the body is parsed by multer, we can access role
     const role = req.body.role || req.query.role || 'client';
     
     if (role === 'artisan') {
-        // For artisans: upload profile picture and documents
-        uploadProfilePic(req, res, (err) => {
-            if (err) {
-                return res.status(400).json({ error: `Profile picture upload error: ${err.message}` });
-            }
-            uploadDocuments(req, res, (docErr) => {
-                if (docErr) {
-                    return res.status(400).json({ error: `Document upload error: ${docErr.message}` });
-                }
-                handleArtisanRegistration(req, res);
-            });
-        });
+        handleArtisanRegistration(req, res);
     } else {
-        // For clients: upload only profile picture (optional)
-        uploadProfilePic(req, res, (err) => {
-            if (err && err.message) {
-                // If upload fails but it's not a file selection error, continue
-                if (err.message.includes('allowed')) {
-                    return res.status(400).json({ error: `Profile picture upload error: ${err.message}` });
-                }
-            }
-            handleClientRegistration(req, res);
-        });
+        handleClientRegistration(req, res);
     }
 });
 
@@ -212,10 +192,13 @@ async function handleArtisanRegistration(req, res) {
         }
 
         // Validate file uploads
-        if (!req.file) {
+        const profilePicFiles = req.files && req.files['profilePic'];
+        const documentFiles = req.files && req.files['documents'];
+
+        if (!profilePicFiles || profilePicFiles.length === 0) {
             return res.status(400).json({ error: 'Profile picture is required for artisans' });
         }
-        if (!req.files || req.files.length === 0) {
+        if (!documentFiles || documentFiles.length === 0) {
             return res.status(400).json({ error: 'At least one document is required for artisans' });
         }
 
@@ -228,8 +211,8 @@ async function handleArtisanRegistration(req, res) {
         const hashedPassword = await bcrypt.hash(password, 10);
         
         // Get Cloudinary URLs
-        const profilePicUrl = req.file.path; // Cloudinary URL
-        const documentsUrls = req.files.map(f => f.path).join(','); // Comma-separated URLs
+        const profilePicUrl = profilePicFiles[0].path; // Cloudinary URL
+        const documentsUrls = documentFiles.map(f => f.path).join(','); // Comma-separated URLs
 
         const [result] = await db.query(
             'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, wilaya_id, commune_id, birthday, profile_pic, artisan_documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -272,7 +255,8 @@ async function handleClientRegistration(req, res) {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const profilePicUrl = req.file ? req.file.path : null; // Cloudinary URL or null
+        const profilePicFiles = req.files && req.files['profilePic'];
+        const profilePicUrl = profilePicFiles && profilePicFiles.length > 0 ? profilePicFiles[0].path : null;
 
         const [result] = await db.query(
             'INSERT INTO users (name, email, password, role, phone, address, wilaya_id, commune_id, birthday, profile_pic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
