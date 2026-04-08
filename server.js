@@ -1064,14 +1064,28 @@ app.get('/api/reviews/service/:id', async (req, res) => {
 
 // Update User Profile
 app.put('/api/users/:id', authenticateToken, async (req, res) => {
-    const { name, phone, address, specialty, experience_years, profile_pic } = req.body;
+    const { name, email, phone, address, specialty, experience_years, profile_pic, wilaya_id, commune_id } = req.body;
     try {
+        // Check permissions
+        if (req.user.id !== parseInt(req.params.id) && req.user.role !== 'admin') {
+            return res.status(403).json({ error: 'Unauthorized to update this profile' });
+        }
+
+        // Email update handling
+        if (email) {
+            const [existing] = await db.query('SELECT id FROM users WHERE email = ? AND id != ?', [email, req.params.id]);
+            if (existing.length > 0) {
+                return res.status(400).json({ error: 'Email already in use by another account' });
+            }
+        }
+
         await db.query(
-            'UPDATE users SET name = ?, phone = ?, address = ?, specialty = ?, experience_years = ?, profile_pic = ? WHERE id = ?',
-            [name, phone, address, specialty, experience_years, profile_pic, req.params.id]
+            'UPDATE users SET name = ?, email = ?, phone = ?, address = ?, specialty = ?, experience_years = ?, profile_pic = ?, wilaya_id = ?, commune_id = ? WHERE id = ?',
+            [name, email, phone, address, specialty, experience_years, profile_pic, wilaya_id || null, commune_id || null, req.params.id]
         );
-        res.json({ message: 'Profile updated' });
+        res.json({ message: 'Profile updated successfully' });
     } catch (err) {
+        console.error('Update Profile Error:', err);
         res.status(500).json({ error: err.message });
     }
 });
