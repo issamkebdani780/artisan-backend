@@ -351,6 +351,8 @@ app.post('/api/auth/login', async (req, res) => {
                 specialty: user.specialty,
                 phone: user.phone,
                 address: user.address,
+                wilaya_id: user.wilaya_id,
+                commune_id: user.commune_id,
                 profile_pic: user.profile_pic,
                 experience_years: user.experience_years
             }
@@ -1061,6 +1063,17 @@ app.get('/api/reviews/service/:id', async (req, res) => {
 
 
 // --- PROFILE ROUTES ---
+
+// Get Single User Profile
+app.get('/api/users/:id', authenticateToken, async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT id, name, email, role, specialty, experience_years, phone, address, wilaya_id, commune_id, birthday, profile_pic FROM users WHERE id = ?', [req.params.id]);
+        if (rows.length === 0) return res.status(404).json({ error: 'User not found' });
+        res.json(rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 // Update User Profile
 app.put('/api/users/:id', authenticateToken, async (req, res) => {
