@@ -25,7 +25,24 @@ const PORT = process.env.PORT || 5000;
             console.log('Migrated: Added client_id to reviews table');
         }
 
-        // 2. Add foreign keys if possible (ignore if already exist)
+        // 2. Check Disputes Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS disputes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                booking_id INT,
+                client_id INT,
+                artisan_id INT,
+                reason TEXT NOT NULL,
+                status ENUM('pending', 'resolved', 'cancelled') DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE,
+                FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `);
+        console.log('Checked/Created disputes table');
+
+        // 3. Add foreign keys if possible (ignore if already exist)
         try {
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
@@ -130,72 +147,36 @@ const clearLoginAttempts = (email) => {
     loginAttempts.delete(email);
 };
 
+// Helper to initialize admin user
+const seedAdmin = async () => {
+    try {
+        const [rows] = await db.query('SELECT * FROM users WHERE email = "admin@gmail.com"');
+        if (rows.length === 0) {
+            const password = 'admin123';
+            const hashedPassword = await bcrypt.hash(password, 10);
+            await db.query(
+                'INSERT INTO users (name, email, password, role, is_verified) VALUES (?, ?, ?, ?, ?)',
+                ['Super Admin', 'admin@gmail.com', hashedPassword, 'admin', 1]
+            );
+            console.log('✅ Admin user seeded: admin@gmail.com / admin123');
+        }
+    } catch (err) {
+        console.error('Error seeding admin:', err.message);
+    }
+};
+
 // Helper to initialize categories
 const seedCategories = async () => {
     try {
+        await seedAdmin();
         try {
             await db.query('ALTER TABLE users MODIFY specialty VARCHAR(1000)');
             console.log('Upgraded users.specialty to VARCHAR(1000)');
         } catch (e) {
             console.debug('Schema already upgraded or not needed');
         }
-
-        // Auto-migrate devis table to ensure location fields exist
-        try {
-            await db.query('ALTER TABLE devis ADD COLUMN wilaya_id INT');
-            await db.query('ALTER TABLE devis ADD CONSTRAINT fk_devis_wilaya FOREIGN KEY (wilaya_id) REFERENCES wilaya(id) ON DELETE SET NULL');
-            console.log('Added wilaya_id to devis table');
-        } catch (e) {
-            console.debug('wilaya_id column already exists in devis or could not be added');
-        }
-        
-        try {
-            await db.query('ALTER TABLE devis ADD COLUMN commune_id INT');
-            await db.query('ALTER TABLE devis ADD CONSTRAINT fk_devis_commune FOREIGN KEY (commune_id) REFERENCES commune(id) ON DELETE SET NULL');
-            console.log('Added commune_id to devis table');
-        } catch (e) {
-            console.debug('commune_id column already exists in devis or could not be added');
-        }
-
-        const [rows] = await db.query('SELECT COUNT(*) as count FROM categories');
-        if (rows[0].count === 0) {
-            const categories = [
-                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux',
-                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions',
-                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie',
-                'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
-            ];
-            for (const cat of categories) {
-                try {
-                    await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
-                } catch (insertErr) {
-                    console.error(`Failed to insert category ${cat}:`, insertErr.message);
-                }
-            }
-            console.log('Categories seeding completed');
-        } else {
-            // For existing databases, ensure new main categories exist
-            const categories = [
-                'Menuiserie et Bois', 'Ferronnerie et Soudure', 'Plomberie et Réseaux',
-                'Électricité et Énergie', 'Peinture et Plâtre', 'Maçonnerie et Finitions',
-                'Mécanique et Machines', 'Couture et Cuir', 'Verre et Miroiterie',
-                'Métiers alimentaires artisanaux', 'Jardinage et Espaces Verts', 'Déménagement et Transport'
-            ];
-            for (const cat of categories) {
-                try {
-                    const [extRows] = await db.query('SELECT id FROM categories WHERE name = ?', [cat]);
-                    if (extRows.length === 0) {
-                        await db.query('INSERT INTO categories (name) VALUES (?)', [cat]);
-                        console.log(`Category ${cat} added to existing database`);
-                    }
-                } catch (err) {
-                    console.error(`Error checking/inserting category ${cat}:`, err.message);
-                }
-            }
-        }
     } catch (err) {
-        console.error('Critical error seeding categories:', err.message);
-        // Don't crash - categories might already exist
+        console.error('Error seeding categories:', err.message);
     }
 };
 seedCategories();
@@ -1221,6 +1202,102 @@ app.put('/api/admin/artisans/:id/verify', authenticateToken, async (req, res) =>
     try {
         await db.query('UPDATE users SET is_verified = 1 WHERE id = ? AND role = "artisan"', [req.params.id]);
         res.json({ message: 'Artisan verified successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get Detailed Admin Stats
+app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        const [artisans] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan"');
+        const [clients] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client"');
+        const [bookings] = await db.query('SELECT COUNT(*) as count FROM bookings');
+        const [revenue] = await db.query('SELECT SUM(total_price) as total FROM bookings WHERE status = "completed"');
+        const [pendingDisputes] = await db.query('SELECT COUNT(*) as count FROM disputes WHERE status = "pending"');
+        
+        // Recent activities (simplified)
+        const [recentArtisans] = await db.query('SELECT name, created_at as time, "Nouvel Artisan" as type FROM users WHERE role = "artisan" ORDER BY created_at DESC LIMIT 5');
+        const [recentBookings] = await db.query('SELECT "Nouveau Booking" as type, b.created_at as time FROM bookings b LIMIT 5');
+
+        res.json({
+            totalArtisans: artisans[0].count,
+            totalClients: clients[0].count,
+            totalBookings: bookings[0].count,
+            totalRevenue: revenue[0].total || 0,
+            pendingDisputes: pendingDisputes[0].count,
+            recentActivities: [...recentArtisans, ...recentBookings].sort((a,b) => new Date(b.time) - new Date(a.time)).slice(0, 10)
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get All Artisans for Admin
+app.get('/api/admin/artisans', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        const [rows] = await db.query('SELECT id, name, email, specialty, phone, address, is_verified, created_at, rating FROM users WHERE role = "artisan" ORDER BY created_at DESC');
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get All Clients for Admin
+app.get('/api/admin/clients', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        const [rows] = await db.query('SELECT id, name, email, phone, address, created_at FROM users WHERE role = "client" ORDER BY created_at DESC');
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get All Payments/Bookings
+app.get('/api/admin/payments', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        const [rows] = await db.query(`
+            SELECT b.*, u_cli.name as client_name, u_art.name as artisan_name, s.title as service_title
+            FROM bookings b
+            JOIN users u_cli ON b.client_id = u_cli.id
+            JOIN services s ON b.service_id = s.id
+            JOIN users u_art ON s.artisan_id = u_art.id
+            ORDER BY b.created_at DESC
+        `);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get All Disputes
+app.get('/api/admin/disputes', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        const [rows] = await db.query(`
+            SELECT d.*, u_cli.name as client_name, u_art.name as artisan_name
+            FROM disputes d
+            JOIN users u_cli ON d.client_id = u_cli.id
+            JOIN users u_art ON d.artisan_id = u_art.id
+            ORDER BY d.created_at DESC
+        `);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Update Dispute Status
+app.put('/api/admin/disputes/:id/status', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    const { status } = req.body;
+    try {
+        await db.query('UPDATE disputes SET status = ? WHERE id = ?', [status, req.params.id]);
+        res.json({ message: 'Statut du litige mis à jour' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
