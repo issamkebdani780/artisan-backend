@@ -1189,7 +1189,7 @@ app.get('/api/admin/stats', authenticateToken, async (req, res) => {
 app.get('/api/admin/artisans/unverified', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
     try {
-        const [rows] = await db.query('SELECT id, name, email, specialty, created_at FROM users WHERE role = "artisan" AND is_verified = 0');
+        const [rows] = await db.query('SELECT id, name, email, specialty, created_at, artisan_documents FROM users WHERE role = "artisan" AND is_verified = 0');
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -1238,7 +1238,7 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
 app.get('/api/admin/artisans', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
     try {
-        const [rows] = await db.query('SELECT id, name, email, specialty, phone, address, is_verified, created_at, rating FROM users WHERE role = "artisan" ORDER BY created_at DESC');
+        const [rows] = await db.query('SELECT id, name, email, specialty, phone, address, is_verified, created_at, rating, artisan_documents FROM users WHERE role = "artisan" ORDER BY created_at DESC');
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
