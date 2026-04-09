@@ -1087,7 +1087,7 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
 // Delete User Account
 app.delete('/api/users/:id', authenticateToken, async (req, res) => {
     const userId = req.params.id;
-    if (parseInt(userId) !== req.user.id) {
+    if (parseInt(userId) !== req.user.id && req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Unauthorized to delete this account' });
     }
     
