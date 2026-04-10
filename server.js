@@ -1291,6 +1291,26 @@ app.put('/api/admin/artisans/:id/refuse', authenticateToken, async (req, res) =>
     }
 });
 
+// Update Admin Settings
+app.put('/api/admin/settings', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    const { email, password } = req.body;
+    try {
+        if (password) {
+            const bcrypt = require('bcryptjs');
+            const hashedPassword = await bcrypt.hash(password, 10);
+            await db.query('UPDATE users SET email = ?, password = ? WHERE id = ? AND role = "admin"', [email, hashedPassword, req.user.id]);
+        } else {
+            if (email) {
+                await db.query('UPDATE users SET email = ? WHERE id = ? AND role = "admin"', [email, req.user.id]);
+            }
+        }
+        res.json({ message: 'Settings updated successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Get Detailed Admin Stats
 app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
