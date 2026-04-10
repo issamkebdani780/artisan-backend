@@ -197,7 +197,13 @@ const seedCategories = async () => {
             await db.query('ALTER TABLE users MODIFY specialty VARCHAR(1000)');
             console.log('Upgraded users.specialty to VARCHAR(1000)');
         } catch (e) {
-            console.debug('Schema already upgraded or not needed');
+            console.debug('specialty Schema already upgraded or not needed');
+        }
+        try {
+            await db.query('ALTER TABLE users MODIFY experience_years VARCHAR(1000)');
+            console.log('Upgraded users.experience_years to VARCHAR(1000)');
+        } catch (e) {
+            console.debug('experience_years Schema already upgraded or not needed');
         }
     } catch (err) {
         console.error('Error seeding categories:', err.message);
@@ -267,7 +273,7 @@ async function handleArtisanRegistration(req, res) {
 
         const [result] = await db.query(
             'INSERT INTO users (name, email, password, role, specialty, experience_years, phone, address, wilaya_id, commune_id, birthday, profile_pic, artisan_documents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [name, email, hashedPassword, 'artisan', specialty, experience_years || 0, phone, address, wilaya_id, commune_id, birthday, profilePicUrl, documentsUrls]
+            [name, email, hashedPassword, 'artisan', specialty, experience_years || '{}', phone, address, wilaya_id, commune_id, birthday, profilePicUrl, documentsUrls]
         );
 
         res.status(201).json({ 
