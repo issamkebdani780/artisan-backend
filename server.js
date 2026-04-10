@@ -1287,27 +1287,28 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         const [artisans] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan"');
         const [clients] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client"');
         const [bookings] = await db.query('SELECT COUNT(*) as count FROM bookings');
-        const [revenue] = await db.query('SELECT SUM(total_price) as total FROM bookings WHERE status = "completed"');
-        const [pendingDisputes] = await db.query('SELECT COUNT(*) as count FROM disputes WHERE status = "pending"');
         
-        // --- Dynamic Changes (Simple current month vs total comparison logic) ---
+        // Sum budget from devis with status 'accepté' or 'terminé'
+        const [revenue] = await db.query('SELECT SUM(budget) as total FROM devis WHERE status IN ("accepté", "terminé")');
+        
+        // --- Dynamic Changes ---
         const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
         
         const [newArtisansMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND created_at >= ?', [firstDayOfMonth]);
         const [newClientsMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client" AND created_at >= ?', [firstDayOfMonth]);
-        const [revenueMonth] = await db.query('SELECT SUM(total_price) as total FROM bookings WHERE status = "completed" AND created_at >= ?', [firstDayOfMonth]);
+        const [revenueMonth] = await db.query('SELECT SUM(budget) as total FROM devis WHERE status IN ("accepté", "terminé") AND created_at >= ?', [firstDayOfMonth]);
         
         const artisanChange = artisans[0].count > 0 ? ((newArtisansMonth[0].count / artisans[0].count) * 100).toFixed(1) : 0;
         const clientChange = clients[0].count > 0 ? ((newClientsMonth[0].count / clients[0].count) * 100).toFixed(1) : 0;
         const revenueChange = (revenue[0].total || 0) > 0 ? (((revenueMonth[0].total || 0) / revenue[0].total) * 100).toFixed(1) : 0;
 
-        // --- Monthly Revenue Data for Chart ---
+        // --- Monthly Revenue Data (from devis) ---
         const [monthlyRev] = await db.query(`
             SELECT 
                 DATE_FORMAT(created_at, '%b') as month,
-                SUM(total_price) as total
-            FROM bookings 
-            WHERE status = 'completed' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 MONTH)
+                SUM(budget) as total
+            FROM devis 
+            WHERE status IN ('accepté', 'terminé') AND created_at >= DATE_SUB(NOW(), INTERVAL 7 MONTH)
             GROUP BY month
             ORDER BY MIN(created_at)
         `);
@@ -1335,16 +1336,12 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         });
 
         const totalRowSum = rawChartData.reduce((a, b) => a + b, 0);
-        
-        // If data is empty, provide some dummy data for "Work" appearance
         if (totalRowSum === 0) {
             rawChartData = [1200, 3400, 2100, 5600, 4500, 8900, 7200];
         }
 
-        // Dynamic scaling: find max and scale to 100
         const maxVal = Math.max(...rawChartData, 1); 
         const scaledChartData = rawChartData.map(v => Math.round((v / maxVal) * 75) + 15); 
-
 
         // Verification Stats
         const [totalCertified] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND is_verified = 1');
@@ -1352,36 +1349,33 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         
         // Recent activities
         const [recentArtisans] = await db.query('SELECT name, created_at as time, "Nouvel Artisan" as type FROM users WHERE role = "artisan" ORDER BY created_at DESC LIMIT 5');
-        const [recentBookings] = await db.query('SELECT status as type, created_at as time FROM bookings ORDER BY created_at DESC LIMIT 5');
+        const [recentBookings] = await db.query('SELECT "Nouveau Devis" as type, created_at as time FROM devis ORDER BY created_at DESC LIMIT 5');
 
         res.json({
             totalArtisans: artisans[0].count,
             totalClients: clients[0].count,
             totalBookings: bookings[0].count,
             totalRevenue: revenue[0].total || 0,
-            pendingDisputes: pendingDisputes[0].count,
             changes: {
                 artisans: `+${artisanChange}%`,
                 clients: `+${clientChange}%`,
-                revenue: `+${revenueChange}%`,
-                disputes: '-2.1%' // Placeholder
+                revenue: `+${revenueChange}%`
             },
             chartData: scaledChartData, 
-            chartRealValues: rawChartData.map(v => (v/1000).toFixed(1)), // for tooltips in k
+            chartRealValues: rawChartData.map(v => (v/1000).toFixed(1)),
             chartLabels: chartLabels,
             verificationStats: {
                 totalCertified: totalCertified[0].count,
                 certifiedMonth: certifiedMonth[0].count,
-                rejectionRate: '2.4%' // Placeholder
+                rejectionRate: '2.4%'
             },
             recentActivities: [...recentArtisans, ...recentBookings].sort((a,b) => new Date(b.time) - new Date(a.time)).slice(0, 10)
         });
-
-
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
 
 
 // Get All Artisans for Admin
