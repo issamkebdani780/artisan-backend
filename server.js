@@ -1290,9 +1290,49 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         const [revenue] = await db.query('SELECT SUM(total_price) as total FROM bookings WHERE status = "completed"');
         const [pendingDisputes] = await db.query('SELECT COUNT(*) as count FROM disputes WHERE status = "pending"');
         
-        // Recent activities (simplified)
+        // --- Dynamic Changes (Simple current month vs total comparison logic) ---
+        const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+        
+        const [newArtisansMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND created_at >= ?', [firstDayOfMonth]);
+        const [newClientsMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client" AND created_at >= ?', [firstDayOfMonth]);
+        const [revenueMonth] = await db.query('SELECT SUM(total_price) as total FROM bookings WHERE status = "completed" AND created_at >= ?', [firstDayOfMonth]);
+        
+        const artisanChange = artisans[0].count > 0 ? ((newArtisansMonth[0].count / artisans[0].count) * 100).toFixed(1) : 0;
+        const clientChange = clients[0].count > 0 ? ((newClientsMonth[0].count / clients[0].count) * 100).toFixed(1) : 0;
+        const revenueChange = (revenue[0].total || 0) > 0 ? (((revenueMonth[0].total || 0) / revenue[0].total) * 100).toFixed(1) : 0;
+
+        // --- Monthly Revenue Data for Chart ---
+        const [monthlyRev] = await db.query(`
+            SELECT 
+                DATE_FORMAT(created_at, '%b') as month,
+                SUM(total_price) as total
+            FROM bookings 
+            WHERE status = 'completed' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 MONTH)
+            GROUP BY month
+            ORDER BY MIN(created_at)
+        `);
+        
+        // Fill defaults if less than 7 months
+        const months = ['Jan', 'Fev', 'Mar', 'Avr', 'Mai', 'Juin', 'Jul', 'Aou', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const currentMonthIdx = new Date().getMonth();
+        const last7Months = [];
+        for (let i = 6; i >= 0; i--) {
+            const mIdx = (currentMonthIdx - i + 12) % 12;
+            last7Months.push(months[mIdx]);
+        }
+
+        const chartData = last7Months.map(m => {
+            const row = monthlyRev.find(r => r.month.startsWith(m) || m.startsWith(r.month));
+            return { month: m, total: row ? parseFloat(row.total) : 0 };
+        });
+
+        // --- Verification Stats ---
+        const [totalCertified] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND is_verified = 1');
+        const [certifiedMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND is_verified = 1 AND created_at >= ?', [firstDayOfMonth]);
+        
+        // Recent activities
         const [recentArtisans] = await db.query('SELECT name, created_at as time, "Nouvel Artisan" as type FROM users WHERE role = "artisan" ORDER BY created_at DESC LIMIT 5');
-        const [recentBookings] = await db.query('SELECT "Nouveau Booking" as type, b.created_at as time FROM bookings b LIMIT 5');
+        const [recentBookings] = await db.query('SELECT status as type, created_at as time FROM bookings ORDER BY created_at DESC LIMIT 5');
 
         res.json({
             totalArtisans: artisans[0].count,
@@ -1300,12 +1340,26 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
             totalBookings: bookings[0].count,
             totalRevenue: revenue[0].total || 0,
             pendingDisputes: pendingDisputes[0].count,
+            changes: {
+                artisans: `+${artisanChange}%`,
+                clients: `+${clientChange}%`,
+                revenue: `+${revenueChange}%`,
+                disputes: '-2.1%' // Placeholder
+            },
+            chartData: chartData.map(d => Math.round(d.total / 1000) || 0), // in thousands
+            chartLabels: chartData.map(d => d.month),
+            verificationStats: {
+                totalCertified: totalCertified[0].count,
+                certifiedMonth: certifiedMonth[0].count,
+                rejectionRate: '2.4%' // Placeholder
+            },
             recentActivities: [...recentArtisans, ...recentBookings].sort((a,b) => new Date(b.time) - new Date(a.time)).slice(0, 10)
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
+
 
 // Get All Artisans for Admin
 app.get('/api/admin/artisans', authenticateToken, async (req, res) => {
