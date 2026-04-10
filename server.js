@@ -1280,6 +1280,17 @@ app.put('/api/admin/artisans/:id/verify', authenticateToken, async (req, res) =>
     }
 });
 
+// Refuse Artisan
+app.put('/api/admin/artisans/:id/refuse', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        await db.query('UPDATE users SET is_verified = -1 WHERE id = ? AND role = "artisan"', [req.params.id]);
+        res.json({ message: 'Artisan refused successfully' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Get Detailed Admin Stats
 app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
