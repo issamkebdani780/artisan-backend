@@ -247,6 +247,12 @@ async function handleArtisanRegistration(req, res) {
         if (phone && !/^\d{7,15}$/.test(phone.replace(/[\s\-\(\)]/g, ''))) {
             return res.status(400).json({ error: 'Phone number is invalid' });
         }
+        if (birthday) {
+            const bDate = new Date(birthday);
+            if (isNaN(bDate.getTime()) || bDate > new Date()) {
+                return res.status(400).json({ error: 'La date de naissance ne peut pas dépasser la date actuelle' });
+            }
+        }
 
         // Validate file uploads
         const profilePicFiles = req.files && req.files['profilePic'];
@@ -365,7 +371,8 @@ app.post('/api/auth/login', async (req, res) => {
                 wilaya_id: user.wilaya_id,
                 commune_id: user.commune_id,
                 profile_pic: user.profile_pic,
-                experience_years: user.experience_years
+                experience_years: user.experience_years,
+                is_verified: user.is_verified
             }
         });
     } catch (err) {
