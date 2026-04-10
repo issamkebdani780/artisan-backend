@@ -42,7 +42,31 @@ const PORT = process.env.PORT || 5000;
         `);
         console.log('Checked/Created disputes table');
 
-        // 3. Add foreign keys if possible (ignore if already exist)
+        // 3. Subcategories Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS subcategories (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                category_id INT NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                image_url VARCHAR(255),
+                icon VARCHAR(50),
+                FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+            )
+        `);
+
+        // Check for subcategory_id in services
+        const [servColumns] = await db.query('SHOW COLUMNS FROM services');
+        if (!servColumns.map(c => c.Field).includes('subcategory_id')) {
+            try {
+                await db.query('ALTER TABLE services ADD COLUMN subcategory_id INT AFTER category_id');
+                await db.query('ALTER TABLE services ADD FOREIGN KEY (subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL');
+            } catch (e) { /* Already exists */ }
+        }
+
+        console.log('Checked/Created subcategories table');
+
+        // 4. Add foreign keys if possible (ignore if already exist)
         try {
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
@@ -624,6 +648,55 @@ app.get('/api/categories', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+// Get subcategories for a category
+app.get('/api/categories/:id/subcategories', async (req, res) => {
+    try {
+        const [rows] = await db.query('SELECT * FROM subcategories WHERE category_id = ?', [req.params.id]);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get subcategory details + popular artisans
+app.get('/api/subcategories/:id', async (req, res) => {
+    try {
+        const subcategoryId = req.params.id;
+        
+        // Get subcategory info
+        const [subRows] = await db.query(`
+            SELECT s.*, c.name as category_name 
+            FROM subcategories s 
+            JOIN categories c ON s.category_id = c.id 
+            WHERE s.id = ?
+        `, [subcategoryId]);
+        
+        if (subRows.length === 0) return res.status(404).json({ error: 'Subcategory not found' });
+        
+        const subcategory = subRows[0];
+        
+        // Get popular artisans for this subcategory
+        const [artisans] = await db.query(`
+            SELECT u.id, u.name, u.rating, u.review_count, u.profile_pic, u.specialty
+            FROM users u
+            WHERE u.role = 'artisan' 
+            AND (u.specialty LIKE ? OR u.id IN (
+                SELECT artisan_id FROM services WHERE subcategory_id = ?
+            ))
+            ORDER BY u.rating DESC, u.review_count DESC
+            LIMIT 5
+        `, [`%${subcategory.name}%`, subcategoryId]);
+        
+        res.json({
+            ...subcategory,
+            artisans
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 
 // List wilayas
 app.get('/api/wilayas', async (req, res) => {
