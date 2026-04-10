@@ -1312,18 +1312,25 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
             ORDER BY MIN(created_at)
         `);
         
-        // Fill defaults if less than 7 months
-        const months = ['Jan', 'Fev', 'Mar', 'Avr', 'Mai', 'Juin', 'Jul', 'Aou', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthsFr = ['Jan', 'Fev', 'Mar', 'Avr', 'Mai', 'Juin', 'Jul', 'Aou', 'Sep', 'Oct', 'Nov', 'Dec'];
+        
         const currentMonthIdx = new Date().getMonth();
         const last7Months = [];
+        const last7MonthsEn = [];
         for (let i = 6; i >= 0; i--) {
             const mIdx = (currentMonthIdx - i + 12) % 12;
-            last7Months.push(months[mIdx]);
+            last7Months.push(monthsFr[mIdx]);
+            last7MonthsEn.push(monthsEn[mIdx]);
         }
 
         const chartLabels = last7Months;
-        let rawChartData = last7Months.map(m => {
-            const row = monthlyRev.find(r => r.month.startsWith(m) || m.startsWith(r.month));
+        let rawChartData = last7Months.map((mFr, idx) => {
+            const mEn = last7MonthsEn[idx];
+            const row = monthlyRev.find(r => 
+                r.month.toLowerCase().startsWith(mFr.toLowerCase().substring(0, 3)) || 
+                r.month.toLowerCase().startsWith(mEn.toLowerCase().substring(0, 3))
+            );
             return row ? parseFloat(row.total) : 0;
         });
 
@@ -1335,8 +1342,9 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         }
 
         // Dynamic scaling: find max and scale to 100
-        const maxVal = Math.max(...rawChartData, 1000); 
-        const scaledChartData = rawChartData.map(v => Math.round((v / maxVal) * 80) + 10); 
+        const maxVal = Math.max(...rawChartData, 1); 
+        const scaledChartData = rawChartData.map(v => Math.round((v / maxVal) * 75) + 15); 
+
 
         // Verification Stats
         const [totalCertified] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND is_verified = 1');
