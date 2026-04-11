@@ -398,7 +398,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 // List Artisans (with optional filters and pagination)
 app.get('/api/artisans', async (req, res) => {
-    const { specialty, location, category, minRating, maxPrice, availableOnly, limit = 20, offset = 0 } = req.query;
+    const { specialty, location, category, minRating, maxPrice, onlyFavorites, limit = 20, offset = 0 } = req.query;
     
     // Check if user is logged in to show favorites
     let clientId = null;
@@ -415,6 +415,9 @@ app.get('/api/artisans', async (req, res) => {
     const pageLimit = Math.min(parseInt(limit) || 20, 100); // Max 100 per page
     const pageOffset = Math.max(parseInt(offset) || 0, 0);
 
+    // Filter by favorites if requested
+    const useFavoritesFilter = (onlyFavorites === '1' || onlyFavorites === 'true') && clientId;
+
     // Base query using GROUP BY to get the lowest price per artisan (NO EMAIL EXPOSED)
     let query = `
         SELECT u.id, u.name, u.specialty as role, u.rating, u.review_count as reviews, 
@@ -422,10 +425,12 @@ app.get('/api/artisans', async (req, res) => {
         MIN(s.base_price) as price, 'Disponible' as availability ${clientId ? ', (SELECT COUNT(*) FROM favorites WHERE client_id = ? AND artisan_id = u.id) as isFavorited' : ''}
         FROM users u
         LEFT JOIN services s ON u.id = s.artisan_id
+        ${useFavoritesFilter ? 'INNER JOIN favorites f ON u.id = f.artisan_id AND f.client_id = ?' : ''}
         WHERE u.role = "artisan"
     `;
     const params = [];
     if (clientId) params.push(clientId);
+    if (useFavoritesFilter) params.push(clientId);
 
     if (specialty) {
         query += ' AND (u.specialty LIKE ? OR u.name LIKE ?)';
@@ -474,9 +479,6 @@ app.get('/api/artisans', async (req, res) => {
     query += ` LIMIT ? OFFSET ?`;
     params.push(pageLimit, pageOffset);
 
-    if (availableOnly && (availableOnly === '1' || availableOnly === 'true')) {
-        // Availability is simulated as 'Disponible'
-    }
 
     try {
         const [rows] = await db.query(query, params);
