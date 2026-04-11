@@ -66,7 +66,21 @@ const PORT = process.env.PORT || 5000;
 
         console.log('Checked/Created subcategories table');
 
-        // 4. Add foreign keys if possible (ignore if already exist)
+        // 4. Favorites Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS favorites (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id INT NOT NULL,
+                artisan_id INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY (client_id, artisan_id),
+                FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `);
+        console.log('Checked/Created favorites table');
+
+        // 5. Add foreign keys if possible (ignore if already exist)
         try {
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
@@ -386,6 +400,17 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/artisans', async (req, res) => {
     const { specialty, location, category, minRating, maxPrice, availableOnly, limit = 20, offset = 0 } = req.query;
     
+    // Check if user is logged in to show favorites
+    let clientId = null;
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            clientId = decoded.id;
+        } catch (err) { /* ignore invalid token */ }
+    }
+
     // Validate pagination params
     const pageLimit = Math.min(parseInt(limit) || 20, 100); // Max 100 per page
     const pageOffset = Math.max(parseInt(offset) || 0, 0);
@@ -394,12 +419,13 @@ app.get('/api/artisans', async (req, res) => {
     let query = `
         SELECT u.id, u.name, u.specialty as role, u.rating, u.review_count as reviews, 
         u.address as location, u.is_verified as isVerified, u.profile_pic as image,
-        MIN(s.base_price) as price, 'Disponible' as availability
+        MIN(s.base_price) as price, 'Disponible' as availability ${clientId ? ', (SELECT COUNT(*) FROM favorites WHERE client_id = ? AND artisan_id = u.id) as isFavorited' : ''}
         FROM users u
         LEFT JOIN services s ON u.id = s.artisan_id
         WHERE u.role = "artisan"
     `;
     const params = [];
+    if (clientId) params.push(clientId);
 
     if (specialty) {
         query += ' AND (u.specialty LIKE ? OR u.name LIKE ?)';
@@ -486,9 +512,29 @@ app.get('/api/public/stats', async (req, res) => {
 
 // Get Featured Artisans
 app.get('/api/artisans/featured', async (req, res) => {
+    // Check if user is logged in
+    let clientId = null;
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            clientId = decoded.id;
+        } catch (err) { /* ignore invalid token */ }
+    }
+
     try {
-        const query = 'SELECT id, name, specialty as role, rating, review_count as reviews, address as location, is_verified as isVerified, profile_pic as image FROM users WHERE role = "artisan" AND is_verified = 1 LIMIT 4';
-        const [rows] = await db.query(query);
+        const query = `
+            SELECT id, name, specialty as role, rating, review_count as reviews, 
+            address as location, is_verified as isVerified, profile_pic as image 
+            ${clientId ? ', (SELECT COUNT(*) FROM favorites WHERE client_id = ? AND artisan_id = users.id) as isFavorited' : ''}
+            FROM users 
+            WHERE role = "artisan" AND is_verified = 1 
+            ORDER BY rating DESC 
+            LIMIT 4
+        `;
+        const params = clientId ? [clientId] : [];
+        const [rows] = await db.query(query, params);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -497,8 +543,27 @@ app.get('/api/artisans/featured', async (req, res) => {
 
 // Get Single Artisan Details
 app.get('/api/artisans/:id', async (req, res) => {
+    // Check if user is logged in
+    let clientId = null;
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+        try {
+            const decoded = jwt.verify(token, JWT_SECRET);
+            clientId = decoded.id;
+        } catch (err) { /* ignore invalid token */ }
+    }
+
     try {
-        const [rows] = await db.query('SELECT id, name, email, specialty, experience_years, phone, address, is_verified, rating, review_count, profile_pic, artisan_documents, created_at FROM users WHERE id = ? AND role = "artisan"', [req.params.id]);
+        const query = `
+            SELECT id, name, email, specialty, experience_years, phone, address, is_verified, rating, review_count, profile_pic, artisan_documents, created_at 
+            ${clientId ? ', (SELECT COUNT(*) FROM favorites WHERE client_id = ? AND artisan_id = users.id) as isFavorited' : ''}
+            FROM users 
+            WHERE id = ? AND role = "artisan"
+        `;
+        const params = clientId ? [clientId, req.params.id] : [req.params.id];
+        const [rows] = await db.query(query, params);
+        
         if (rows.length === 0) return res.status(404).json({ error: 'Artisan not found' });
         res.json(rows[0]);
     } catch (err) {
@@ -729,6 +794,57 @@ app.get('/api/communes', async (req, res) => {
     }
     try {
         const [rows] = await db.query('SELECT * FROM commune WHERE wilaya_id = ?', [wilaya_id]);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- FAVORITE ROUTES ---
+
+// Toggle Favorite (Add or Remove)
+app.post('/api/favorites/toggle', authenticateToken, async (req, res) => {
+    const { artisan_id } = req.body;
+    const client_id = req.user.id;
+
+    if (!artisan_id) {
+        return res.status(400).json({ error: 'artisan_id is required' });
+    }
+
+    try {
+        // Check if already favorited
+        const [rows] = await db.query('SELECT id FROM favorites WHERE client_id = ? AND artisan_id = ?', [client_id, artisan_id]);
+        
+        if (rows.length > 0) {
+            // Remove from favorites
+            await db.query('DELETE FROM favorites WHERE client_id = ? AND artisan_id = ?', [client_id, artisan_id]);
+            return res.json({ message: 'Removed from favorites', isFavorited: false });
+        } else {
+            // Add to favorites
+            await db.query('INSERT INTO favorites (client_id, artisan_id) VALUES (?, ?)', [client_id, artisan_id]);
+            return res.status(201).json({ message: 'Added to favorites', isFavorited: true });
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get User's Favorite Artisans
+app.get('/api/favorites', authenticateToken, async (req, res) => {
+    const client_id = req.user.id;
+    try {
+        const query = `
+            SELECT u.id, u.name, u.specialty as role, u.rating, u.review_count as reviews, 
+            u.address as location, u.is_verified as isVerified, u.profile_pic as image,
+            MIN(s.base_price) as price, 'Disponible' as availability,
+            1 as isFavorited
+            FROM users u
+            JOIN favorites f ON u.id = f.artisan_id
+            LEFT JOIN services s ON u.id = s.artisan_id
+            WHERE f.client_id = ? AND u.role = "artisan"
+            GROUP BY u.id
+        `;
+        const [rows] = await db.query(query, [client_id]);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
