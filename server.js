@@ -1457,15 +1457,15 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         const [clients] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client"');
         const [bookings] = await db.query('SELECT COUNT(*) as count FROM bookings');
         
-        // Sum budget from devis with status 'accepté' or 'terminé'
-        const [revenue] = await db.query('SELECT SUM(budget) as total FROM devis WHERE status IN ("accepté", "terminé")');
+        // Sum total revenue from the payments table
+        const [revenue] = await db.query('SELECT SUM(amount) as total FROM payments WHERE status = "completed"');
         
         // --- Dynamic Changes ---
         const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
         
         const [newArtisansMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "artisan" AND created_at >= ?', [firstDayOfMonth]);
         const [newClientsMonth] = await db.query('SELECT COUNT(*) as count FROM users WHERE role = "client" AND created_at >= ?', [firstDayOfMonth]);
-        const [revenueMonth] = await db.query('SELECT SUM(budget) as total FROM devis WHERE status IN ("accepté", "terminé") AND created_at >= ?', [firstDayOfMonth]);
+        const [revenueMonth] = await db.query('SELECT SUM(amount) as total FROM payments WHERE status = "completed" AND created_at >= ?', [firstDayOfMonth]);
         
         const artisanChange = artisans[0].count > 0 ? ((newArtisansMonth[0].count / artisans[0].count) * 100).toFixed(1) : 0;
         const clientChange = clients[0].count > 0 ? ((newClientsMonth[0].count / clients[0].count) * 100).toFixed(1) : 0;
@@ -1475,9 +1475,9 @@ app.get('/api/admin/detailed-stats', authenticateToken, async (req, res) => {
         const [monthlyRev] = await db.query(`
             SELECT 
                 DATE_FORMAT(created_at, '%b') as month,
-                SUM(budget) as total
-            FROM devis 
-            WHERE status IN ('accepté', 'terminé') AND created_at >= DATE_SUB(NOW(), INTERVAL 7 MONTH)
+                SUM(amount) as total
+            FROM payments 
+            WHERE status = 'completed' AND created_at >= DATE_SUB(NOW(), INTERVAL 7 MONTH)
             GROUP BY month
             ORDER BY MIN(created_at)
         `);
@@ -1630,14 +1630,9 @@ app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res)
             return res.status(404).json({ error: 'Artisan not found' });
         }
 
-        // Revenue from bookings (via services join — bookings has no direct artisan_id)
-        const [bookingRevenue] = await db.query(
-            'SELECT SUM(b.total_price) as total FROM bookings b JOIN services s ON b.service_id = s.id WHERE s.artisan_id = ? AND b.status = "completed"',
-            [artisanId]
-        );
-        // Revenue from accepted devis
-        const [devisRevenue] = await db.query(
-            'SELECT SUM(budget) as total FROM devis WHERE artisan_id = ? AND status = "accepté"',
+        // Revenue from payments table
+        const [paymentRevenue] = await db.query(
+            'SELECT SUM(amount) as total FROM payments WHERE artisan_id = ? AND status = "completed"',
             [artisanId]
         );
 
@@ -1661,7 +1656,7 @@ app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res)
             [artisanId]
         );
 
-        const totalRevenue = (parseFloat(bookingRevenue[0].total) || 0) + (parseFloat(devisRevenue[0].total) || 0);
+        const totalRevenue = parseFloat(paymentRevenue[0].total) || 0;
 
         res.json({
             rating: artisanStats[0].rating,
