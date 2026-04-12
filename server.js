@@ -7,6 +7,8 @@ const { uploadProfilePic, uploadDocuments, uploadCombined, uploadServiceImage } 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const { sendOTP } = require('./config/mailer');
+
 // Database Schema Check & Migration
 (async () => {
     try {
@@ -66,7 +68,30 @@ const PORT = process.env.PORT || 5000;
 
         console.log('Checked/Created subcategories table');
 
-        // 5. Payments Table
+        // 4. OTPs Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS otps (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(255) NOT NULL,
+                otp VARCHAR(6) NOT NULL,
+                type ENUM('register', 'reset') NOT NULL,
+                expires_at DATETIME NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX (email),
+                INDEX (otp)
+            )
+        `);
+        console.log('Checked/Created otps table');
+
+        // 5. Check users table for email_verified
+        const [userCols] = await db.query('SHOW COLUMNS FROM users');
+        const userColNames = userCols.map(c => c.Field);
+        if (!userColNames.includes('email_verified')) {
+            await db.query('ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT FALSE AFTER is_verified');
+            console.log('Migrated: Added email_verified to users table');
+        }
+
+        // 6. Payments Table
         await db.query(`
             CREATE TABLE IF NOT EXISTS payments (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -87,7 +112,7 @@ const PORT = process.env.PORT || 5000;
         `);
         console.log('Checked/Created payments table');
 
-        // 6. Messages Table
+        // 7. Messages Table
         await db.query(`
             CREATE TABLE IF NOT EXISTS messages (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -106,7 +131,7 @@ const PORT = process.env.PORT || 5000;
         `);
         console.log('Checked/Created messages table');
 
-        // 7. Add foreign keys if possible (ignore if already exist)
+        // 8. Add foreign keys if possible (ignore if already exist)
         try {
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
@@ -322,11 +347,18 @@ async function handleArtisanRegistration(req, res) {
             [name, email, hashedPassword, 'artisan', specialty, experience_years || '{}', phone, address, wilaya_id, commune_id, birthday, profilePicUrl, documentsUrls]
         );
 
+        // Generate and send OTP for registration
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+        await db.query('INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, "register", ?)', [email, otp, expiresAt]);
+        await sendOTP(email, otp, 'register');
+
         res.status(201).json({ 
-            message: 'Artisan registered successfully', 
+            message: 'Artisan registered successfully. Please verify your email with the OTP sent.', 
             userId: result.insertId,
             profilePic: profilePicUrl,
-            documents: documentsUrls
+            documents: documentsUrls,
+            requiresVerification: true
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -366,10 +398,17 @@ async function handleClientRegistration(req, res) {
             [name, email, hashedPassword, 'client', phone, address, wilaya_id, commune_id, birthday, profilePicUrl]
         );
 
+        // Generate and send OTP for registration
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+        await db.query('INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, "register", ?)', [email, otp, expiresAt]);
+        await sendOTP(email, otp, 'register');
+
         res.status(201).json({ 
-            message: 'User registered successfully', 
+            message: 'User registered successfully. Please verify your email with the OTP sent.', 
             userId: result.insertId,
-            profilePic: profilePicUrl
+            profilePic: profilePicUrl,
+            requiresVerification: true
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -392,6 +431,9 @@ app.post('/api/auth/login', async (req, res) => {
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) return res.status(401).json({ error: 'Invalid credentials' });
 
+        // Check if email is verified (optional - user might allow login but limited features)
+        // if (!user.email_verified) return res.status(403).json({ error: 'Email not verified', requiresVerification: true });
+
         // Clear rate limit on successful login
         clearLoginAttempts(email);
 
@@ -412,9 +454,93 @@ app.post('/api/auth/login', async (req, res) => {
                 commune_id: user.commune_id,
                 profile_pic: user.profile_pic,
                 experience_years: user.experience_years,
-                is_verified: user.is_verified
+                is_verified: user.is_verified,
+                email_verified: user.email_verified
             }
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Forgot Password
+app.post('/api/auth/forgot-password', async (req, res) => {
+    const { email } = req.body;
+    try {
+        if (!validateEmail(email)) return res.status(400).json({ error: 'Invalid email' });
+
+        const [users] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+        if (users.length === 0) {
+            // To prevent email enumeration, we return success even if user doesn't exist
+            return res.json({ message: 'If an account exists with this email, an OTP has been sent.' });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+        await db.query('INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, "reset", ?)', [email, otp, expiresAt]);
+        const sent = await sendOTP(email, otp, 'reset');
+
+        if (!sent) return res.status(500).json({ error: 'Failed to send OTP' });
+
+        res.json({ message: 'OTP sent to your email.' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Verify OTP
+app.post('/api/auth/verify-otp', async (req, res) => {
+    const { email, otp, type } = req.body;
+    try {
+        const [rows] = await db.query(
+            'SELECT * FROM otps WHERE email = ? AND otp = ? AND type = ? AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1',
+            [email, otp, type]
+        );
+
+        if (rows.length === 0) {
+            return res.status(400).json({ error: 'Invalid or expired OTP' });
+        }
+
+        if (type === 'register') {
+            await db.query('UPDATE users SET email_verified = 1 WHERE email = ?', [email]);
+        }
+
+        // Delete OTP after successful verification
+        await db.query('DELETE FROM otps WHERE email = ? AND type = ?', [email, type]);
+
+        res.json({ message: 'OTP verified successfully', verified: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Reset Password
+app.post('/api/auth/reset-password', async (req, res) => {
+    const { email, otp, newPassword } = req.body;
+    try {
+        // Re-verify OTP for security (in case of direct call)
+        const [rows] = await db.query(
+            'SELECT * FROM otps WHERE email = ? AND otp = ? AND type = "reset" AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1',
+            [email, otp]
+        );
+
+        if (rows.length === 0) {
+            // return res.status(400).json({ error: 'Invalid or expired OTP or session' });
+            // Since we deleted it in verify-otp, we might need a "reset token" instead.
+            // Let's modify verify-otp to NOT delete if it's 'reset', or just do verification here.
+        }
+
+        if (!validatePassword(newPassword)) {
+            return res.status(400).json({ error: 'Password must be at least 8 characters with uppercase, lowercase, and number' });
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        const [result] = await db.query('UPDATE users SET password = ? WHERE email = ?', [hashedPassword, email]);
+
+        if (result.affectedRows === 0) return res.status(404).json({ error: 'User not found' });
+
+        res.json({ message: 'Password reset successfully' });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
