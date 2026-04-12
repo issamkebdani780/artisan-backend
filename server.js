@@ -87,7 +87,26 @@ const PORT = process.env.PORT || 5000;
         `);
         console.log('Checked/Created payments table');
 
-        // 6. Add foreign keys if possible (ignore if already exist)
+        // 6. Messages Table
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                sender_id INT NOT NULL,
+                receiver_id INT NOT NULL,
+                devis_id INT DEFAULT NULL,
+                booking_id INT DEFAULT NULL,
+                message TEXT NOT NULL,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (devis_id) REFERENCES devis(id) ON DELETE SET NULL,
+                FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE SET NULL
+            )
+        `);
+        console.log('Checked/Created messages table');
+
+        // 7. Add foreign keys if possible (ignore if already exist)
         try {
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
@@ -908,7 +927,7 @@ app.post('/api/bookings', authenticateToken, async (req, res) => {
 app.get('/api/bookings/user/:id', authenticateToken, async (req, res) => {
     try {
         const query = `
-            SELECT b.*, s.title as service_title, u.name as artisan_name 
+            SELECT b.*, s.title as service_title, u.name as artisan_name, s.artisan_id
             FROM bookings b
             JOIN services s ON b.service_id = s.id
             JOIN users u ON s.artisan_id = u.id
@@ -1152,7 +1171,7 @@ app.get('/api/devis/artisan/:artisanId', authenticateToken, async (req, res) => 
     const artisanId = req.params.artisanId;
     try {
         const query = `
-            SELECT d.*, u.name as client_name, c.name as category_name
+            SELECT d.*, u.name as client_name, c.name as category_name, d.client_id
             FROM devis d
             JOIN users u ON d.client_id = u.id
             JOIN categories c ON d.category_id = c.id
@@ -1668,6 +1687,64 @@ app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res)
             totalDevis: totalDevis[0].count,
             totalRevenue
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- MESSAGE ROUTES ---
+app.post('/api/messages', authenticateToken, async (req, res) => {
+    const { receiver_id, devis_id, booking_id, message } = req.body;
+    const sender_id = req.user.id;
+    try {
+        const [result] = await db.query(
+            'INSERT INTO messages (sender_id, receiver_id, devis_id, booking_id, message) VALUES (?, ?, ?, ?, ?)',
+            [sender_id, receiver_id, devis_id || null, booking_id || null, message]
+        );
+        res.status(201).json({ id: result.insertId, sender_id, message, created_at: new Date() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/messages/:otherUserId', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    const otherUserId = req.params.otherUserId;
+    try {
+        const [rows] = await db.query(`
+            SELECT m.*, u.name as sender_name 
+            FROM messages m
+            JOIN users u ON m.sender_id = u.id
+            WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
+            ORDER BY created_at ASC
+        `, [userId, otherUserId, otherUserId, userId]);
+        await db.query('UPDATE messages SET is_read = 1 WHERE sender_id = ? AND receiver_id = ?', [otherUserId, userId]);
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/conversations', authenticateToken, async (req, res) => {
+    const userId = req.user.id;
+    try {
+        const [rows] = await db.query(`
+            SELECT DISTINCT 
+                u.id, u.name, u.role, u.profile_pic,
+                (SELECT message FROM messages 
+                 WHERE (sender_id = ? AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = ?)
+                 ORDER BY created_at DESC LIMIT 1) as last_message,
+                (SELECT created_at FROM messages 
+                 WHERE (sender_id = ? AND receiver_id = u.id) OR (sender_id = u.id AND receiver_id = ?)
+                 ORDER BY created_at DESC LIMIT 1) as last_message_time,
+                (SELECT COUNT(*) FROM messages 
+                 WHERE sender_id = u.id AND receiver_id = ? AND is_read = 0) as unread_count
+            FROM users u
+            JOIN messages m ON (m.sender_id = u.id AND m.receiver_id = ?) OR (m.sender_id = ? AND m.receiver_id = u.id)
+            WHERE u.id != ?
+            ORDER BY last_message_time DESC
+        `, [userId, userId, userId, userId, userId, userId, userId, userId]);
+        res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
