@@ -66,21 +66,28 @@ const PORT = process.env.PORT || 5000;
 
         console.log('Checked/Created subcategories table');
 
-        // 4. Favorites Table
+        // 5. Payments Table
         await db.query(`
-            CREATE TABLE IF NOT EXISTS favorites (
+            CREATE TABLE IF NOT EXISTS payments (
                 id INT AUTO_INCREMENT PRIMARY KEY,
+                devis_id INT DEFAULT NULL,
+                booking_id INT DEFAULT NULL,
                 client_id INT NOT NULL,
                 artisan_id INT NOT NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                status ENUM('pending', 'completed', 'failed') DEFAULT 'pending',
+                payment_method VARCHAR(50) DEFAULT 'card',
+                transaction_id VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY (client_id, artisan_id),
+                FOREIGN KEY (devis_id) REFERENCES devis(id) ON DELETE CASCADE,
+                FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE,
                 FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE
             )
         `);
-        console.log('Checked/Created favorites table');
+        console.log('Checked/Created payments table');
 
-        // 5. Add foreign keys if possible (ignore if already exist)
+        // 6. Add foreign keys if possible (ignore if already exist)
         try {
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (artisan_id) REFERENCES users(id) ON DELETE CASCADE');
             await db.query('ALTER TABLE reviews ADD FOREIGN KEY (client_id) REFERENCES users(id) ON DELETE CASCADE');
@@ -1666,6 +1673,42 @@ app.get('/api/artisans/:id/dashboard-stats', authenticateToken, async (req, res)
             totalDevis: totalDevis[0].count,
             totalRevenue
         });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- PAYMENT ROUTES ---
+app.post('/api/payments', authenticateToken, async (req, res) => {
+    const { devis_id, booking_id, artisan_id, amount, payment_method, transaction_id } = req.body;
+    const client_id = req.user.id;
+    try {
+        const [result] = await db.query(
+            'INSERT INTO payments (devis_id, booking_id, client_id, artisan_id, amount, payment_method, transaction_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, "completed")',
+            [devis_id || null, booking_id || null, client_id, artisan_id, amount, payment_method || 'card', transaction_id || 'PAY_' + Math.random().toString(36).substr(2, 9).toUpperCase(), 'completed']
+        );
+        
+        if (devis_id) {
+            await db.query('UPDATE devis SET status = "terminé" WHERE id = ?', [devis_id]);
+        }
+        
+        res.status(201).json({ message: 'Payment successful', paymentId: result.insertId });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/payments', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Unauthorized' });
+    try {
+        const [rows] = await db.query(`
+            SELECT p.*, c.name as client_name, a.name as artisan_name
+            FROM payments p
+            JOIN users c ON p.client_id = c.id
+            JOIN users a ON p.artisan_id = a.id
+            ORDER BY p.created_at DESC
+        `);
+        res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
