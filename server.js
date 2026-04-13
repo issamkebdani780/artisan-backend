@@ -348,18 +348,15 @@ async function handleArtisanRegistration(req, res) {
             [name, email, hashedPassword, 'artisan', specialty, experience_years || '{}', phone, address, wilaya_id, commune_id, birthday, profilePicUrl, documentsUrls]
         );
 
-        // Generate and send OTP for registration
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-        await db.query('INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, "register", ?)', [email, otp, expiresAt]);
-        await sendOTP(email, otp, 'register');
+        // Bypass OTP for now (Nodemailer removed)
+        await db.query('UPDATE users SET email_verified = 1 WHERE id = ?', [result.insertId]);
 
         res.status(201).json({ 
-            message: 'Artisan registered successfully. Please verify your email with the OTP sent.', 
+            message: 'Artisan registered successfully.', 
             userId: result.insertId,
             profilePic: profilePicUrl,
             documents: documentsUrls,
-            requiresVerification: true
+            requiresVerification: false
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -399,17 +396,14 @@ async function handleClientRegistration(req, res) {
             [name, email, hashedPassword, 'client', phone, address, wilaya_id, commune_id, birthday, profilePicUrl]
         );
 
-        // Generate and send OTP for registration
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-        await db.query('INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, "register", ?)', [email, otp, expiresAt]);
-        await sendOTP(email, otp, 'register');
+        // Bypass OTP for now (Nodemailer removed)
+        await db.query('UPDATE users SET email_verified = 1 WHERE id = ?', [result.insertId]);
 
         res.status(201).json({ 
-            message: 'User registered successfully. Please verify your email with the OTP sent.', 
+            message: 'User registered successfully.', 
             userId: result.insertId,
             profilePic: profilePicUrl,
-            requiresVerification: true
+            requiresVerification: false
         });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -480,9 +474,10 @@ app.post('/api/auth/forgot-password', async (req, res) => {
         const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
         await db.query('INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, "reset", ?)', [email, otp, expiresAt]);
-        const sent = await sendOTP(email, otp, 'reset');
+        // Bypassing nodemailer
+        console.log(`[DEV] OTP for ${email} is ${otp}`);
 
-        if (!sent) return res.status(500).json({ error: 'Failed to send OTP' });
+        // if (!sent) return res.status(500).json({ error: 'Failed to send OTP' });
 
         res.json({ message: 'OTP sent to your email.' });
     } catch (err) {
