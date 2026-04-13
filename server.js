@@ -147,6 +147,7 @@ app.use(cors({
     origin: process.env.FRONTEND_URL
         ? [process.env.FRONTEND_URL]
         : [
+            'https://mihnati-kappa.vercel.app',
             'https://mihnati-pink.vercel.app',
             'https://bericolipro.linguaflo.me',
             'http://bericolipro.linguaflo.me',
@@ -172,7 +173,7 @@ app.use((req, res, next) => {
     // Referrer Policy
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     // Content Security Policy
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:;");
     next();
 });
 
@@ -1708,6 +1709,23 @@ app.get('/api/admin/clients', authenticateToken, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
     try {
         const [rows] = await db.query('SELECT id, name, email, phone, address, created_at FROM users WHERE role = "client" ORDER BY created_at DESC');
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get All Projects for Admin
+app.get('/api/admin/projects', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).send('Admin access required');
+    try {
+        const [rows] = await db.query(`
+            SELECT d.*, u_cli.name as client_name, u_art.name as artisan_name
+            FROM devis d
+            LEFT JOIN users u_cli ON d.client_id = u_cli.id
+            LEFT JOIN users u_art ON d.artisan_id = u_art.id
+            ORDER BY d.created_at DESC
+        `);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
