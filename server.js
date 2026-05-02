@@ -12,6 +12,7 @@ const { sendOTP } = require('./config/mailer');
 // Database Schema Check & Migration
 (async () => {
     try {
+        
         console.log('Running database schema checks...');
         
         // 1. Check Reviews Table
