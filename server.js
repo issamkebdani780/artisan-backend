@@ -69,6 +69,14 @@ const { sendOTP } = require('./config/mailer');
 
         console.log('Checked/Created subcategories table');
 
+        // 3.5 Check for max_price in services
+        const [servColumns2] = await db.query('SHOW COLUMNS FROM services');
+        const servColNames = servColumns2.map(c => c.Field);
+        if (!servColNames.includes('max_price')) {
+            await db.query('ALTER TABLE services ADD COLUMN max_price DECIMAL(10,2) AFTER base_price');
+            console.log('Migrated: Added max_price to services table');
+        }
+
         // 4. OTPs Table
         await db.query(`
             CREATE TABLE IF NOT EXISTS otps (
@@ -1099,7 +1107,7 @@ app.put('/api/bookings/:id/status', authenticateToken, async (req, res) => {
 
 // Create Service with Image Upload
 app.post('/api/services', authenticateToken, uploadServiceImage, async (req, res) => {
-    const { category_id, title, description, base_price } = req.body;
+    const { category_id, title, description, base_price, max_price } = req.body;
     const artisan_id = req.user.id;
     try {
         const imageUrl = req.file ? req.file.path : (req.body.image_url || null);
@@ -1125,8 +1133,8 @@ app.post('/api/services', authenticateToken, uploadServiceImage, async (req, res
         }
 
         const [result] = await db.query(
-            'INSERT INTO services (category_id, artisan_id, title, description, base_price, image_url) VALUES (?, ?, ?, ?, ?, ?)',
-            [category_id, artisan_id, title, description, base_price, imageUrl]
+            'INSERT INTO services (category_id, artisan_id, title, description, base_price, max_price, image_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [category_id, artisan_id, title, description, base_price, max_price || null, imageUrl]
         );
         res.status(201).json({ message: 'Service created', serviceId: result.insertId, image_url: imageUrl });
     } catch (err) {
@@ -1136,7 +1144,7 @@ app.post('/api/services', authenticateToken, uploadServiceImage, async (req, res
 
 // Update Service with Optional Image Upload
 app.put('/api/services/:id', authenticateToken, uploadServiceImage, async (req, res) => {
-    const { category_id, title, description, base_price } = req.body;
+    const { category_id, title, description, base_price, max_price } = req.body;
     try {
         let imageUrl = req.body.image_url;
         if (req.file) {
@@ -1144,8 +1152,8 @@ app.put('/api/services/:id', authenticateToken, uploadServiceImage, async (req, 
         }
 
         await db.query(
-            'UPDATE services SET category_id = ?, title = ?, description = ?, base_price = ?, image_url = ? WHERE id = ? AND artisan_id = ?',
-            [category_id, title, description, base_price, imageUrl, req.params.id, req.user.id]
+            'UPDATE services SET category_id = ?, title = ?, description = ?, base_price = ?, max_price = ?, image_url = ? WHERE id = ? AND artisan_id = ?',
+            [category_id, title, description, base_price, max_price || null, imageUrl, req.params.id, req.user.id]
         );
         res.json({ message: 'Service updated', image_url: imageUrl });
     } catch (err) {
